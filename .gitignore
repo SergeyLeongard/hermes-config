@@ -15,6 +15,7 @@ pastes/
 checkpoints/
 *.pid
 *.lock
+*.log
 
 # local db/state
 *.db
@@ -25,11 +26,30 @@ processes.json
 gateway_state.json
 interrupt_debug.log
 .update_check
+models_dev_cache.json
+ollama_cloud_models_cache.json
+context_length_cache.yaml
+.skills_prompt_snapshot.json
+.hermes_history
 
 # heavy/binary
 node/
 hermes-agent/
 OLDArchive/
+
+# python artifacts
+__pycache__/
+*.pyc
+*.pyo
+
+# generated cron outputs
+cron/output/
+
+# os/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
 
 # temp
 *.tmp
