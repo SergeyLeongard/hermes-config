@@ -16,6 +16,10 @@ class ManageEngineAPI:
         self.default_email = os.getenv("MANAGEENGINE_DEFAULT_EMAIL", "")
         self.default_group = os.getenv("MANAGEENGINE_DEFAULT_GROUP", "")
         self.default_group_id = os.getenv("MANAGEENGINE_DEFAULT_GROUP_ID", "").strip()
+        self.user_mapping_path = os.getenv(
+            "USER_MAPPING_PATH",
+            "/home/sadmin/.hermes/skills/manageengine-fsm/user_mapping.json",
+        )
         
         if not self.api_key:
             raise ValueError("MANAGEENGINE_API_KEY not set")
@@ -56,14 +60,28 @@ class ManageEngineAPI:
             return {"error": str(e), "response_status": {"status": "failed"}}
     
     def find_user_by_telegram_id(self, telegram_user_id: str) -> Optional[str]:
-        """
-        Поиск пользователя в ME по Telegram ID.
-        Предполагается, что Telegram ID сохранен в UDF поле или маппится через БД.
-        Пока возвращаем ID по умолчанию (sadmin = 1011).
-        """
-        # TODO: Реализовать поиск через API или локальную БД маппинга
-        # Telegram user_id → IDTelegramUser → Имя или email
-        return "1011"  # sadmin ID
+        """Return requester_id from local ID mapping, fallback to sadmin."""
+        default_requester = "1011"  # sadmin
+        telegram_id = str(telegram_user_id or "").strip()
+        if not telegram_id:
+            return default_requester
+
+        try:
+            with open(self.user_mapping_path, "r", encoding="utf-8") as f:
+                mapping_data = json.load(f)
+        except Exception:
+            return default_requester
+
+        by_id = (
+            mapping_data.get("mapping", {})
+            .get("by_telegram_user_id", {})
+        )
+        entry = by_id.get(telegram_id)
+        if not isinstance(entry, dict):
+            return default_requester
+
+        requester_id = str(entry.get("requester_id", "")).strip()
+        return requester_id if requester_id else default_requester
     
     def create_request(self, subject: str, description: str, 
                       requester_id: str = "1011",

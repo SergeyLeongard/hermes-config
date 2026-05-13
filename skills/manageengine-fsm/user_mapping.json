@@ -1,4 +1,35 @@
 {
-    "669079966": "admin@shin-line.com",
-    "387861683": "user2@shin-line.com"
+  "version": 2,
+  "updated_at": "2026-05-13T00:00:00Z",
+  "fallback_requester": "sadmin",
+  "mapping": {
+    "by_telegram_user_id": {
+      "669079966": {
+        "requester_id": "308",
+        "requester_name": "Сергей Леонгард",
+        "last_seen_username": "@sergey_al5",
+        "updated_at": "2026-05-13T21:35:00Z",
+        "source": "confirmed"
+      },
+      "216995471": {
+        "requester_id": "329",
+        "requester_name": "Нурберген Сауриков",
+        "last_seen_username": "@northmund95",
+        "updated_at": "2026-05-13T00:00:00Z",
+        "source": "confirmed"
+      }
+    }
+  },
+  "notes": {
+    "legacy_confirmed_username_only": [
+      {
+        "telegram_username": "@sergeyal",
+        "requester_id": "308",
+        "requester_name": "Сергей Леонгард",
+        "status": "confirmed_username_only",
+        "comment": "Требуется numeric telegram_user_id для переноса в by_telegram_user_id"
+      }
+    ]
+  },
+  "conflicts": []
 }
