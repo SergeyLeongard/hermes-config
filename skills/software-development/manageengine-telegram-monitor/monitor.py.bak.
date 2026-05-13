@@ -1,0 +1,416 @@
+#!/usr/bin/env python3
+"""
+Логика мониторинга группы Telegram техподдержки.
+Обрабатывает сообщения, определяет категорию, создает/обновляет заявки.
+"""
+
+import json
+import re
+import os
+import sys
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
+
+# Добавляем путь к manageengine-fsm
+sys.path.insert(0, '/home/sadmin/.hermes/skills/manageengine-fsm')
+from api_wrapper import ManageEngineAPI
+
+
+# Конфигурация
+GROUP_CHAT_ID = "-1003990457960"  # ТестИттехпод
+CONTEXT_FILE = "/home/sadmin/.hermes/skills/software-development/manageengine-telegram-monitor/context.json"
+CONTEXT_TIMEOUT_MINUTES = 60  # TTL контекста
+CLEANUP_INTERVAL = 3600  # Cleanup раз в час
+BOT_MENTION_ALIASES = ["@hermessds001bot"]
+IMAGE_CACHE_DIR = "/home/sadmin/.hermes/image_cache"
+IMAGE_ATTACH_WINDOW_SECONDS = 900
+IMAGE_ATTACH_MAX_FILES = 5
+
+# IT-персонал (игнорировать их сообщения)
+TELEGRAM_SUPPORT_STAFF_IDS = [
+    "387861683",  # Шацких Александр (@vlupilin007)
+    "@vlupilin007",
+]
+
+# Антидубли
+DUPLICATE_TIMEOUT_SECONDS = 120  # 2 минуты
+
+# База знаний (заготовка для этапов 5-6)
+# knowledge_base = []  # Будет заполняться из ME API (requests + resolutions)
+
+
+# Маппинг ключевых слов к категориям
+CATEGORY_KEYWORDS = {
+    "613": ["1с", "erp", "база", "бд", "отчет", "проводка", "1с:предприятие"],
+    "614": ["iot", "интернет вещей", "датчик", "умный дом", "умное устройство"],
+    "615": ["vpn", "виртуальная сеть", "удаленный доступ", "туннель"],
+    "605": ["интернет", "сеть", "wifi", "wi-fi", "связь", "локалка"],
+    "604": [
+        "программ",
+        "софт",
+        "archicad",
+        "archi",
+        "архикад",
+        "архи кад",
+        "excel",
+        "ексел",
+        "ексель",
+        "word",
+        "ворд",
+        "powerpoint",
+        "office",
+        "офис",
+        "visio",
+        "project",
+    ],
+    "606": [
+        "почта",
+        "почт",
+        "email",
+        "outlook",
+        "outlok",
+        "оутлук",
+        "аутлук",
+        "оутлак",
+        "письмо",
+        "ящик",
+        "почтовый",
+    ],
+    "601": ["принтер", "печать", "картридж", "печатает"],
+    "607": ["пароль", "вход", "доступ", "права", "учетка", "забыл пароль"],
+    "611": ["вирус", "антивирус", "фишинг", "подозритель", "безопасность"],
+    "610": ["сайт", "домен", "веб", "http", "https"],
+    "602": ["компьютер", "пк", "мышь", "клавиатура", "монитор", "железо"],
+    "608": ["телефон", "атс", "звонок", "gsm", "сим", "мобильный"],
+    "612": []  # Прочее - по умолчанию
+}
+
+OFFTOPIC_PATTERNS = [
+    r"\bрецепт\b",
+    r"\bприготов(ить|лю|ка)\b",
+    r"\bблин(чик|ы)\b",
+    r"\bпирож(к|ки|ок)\b",
+    r"\bтротил\b",
+    r"\bвзрыв(чат|чатк|чатое)?\b",
+    r"\bбомб(а|ы)\b",
+]
+
+
+def auto_create_category(api: ManageEngineAPI, category_name: str, description: str = "") -> Optional[str]:
+    """
+    Автоматическое создание новой категории в ME SDP.
+    Возвращает ID новой категории или None при ошибке.
+    """
+    import requests
+    
+    category_data = {
+        "category": {
+            "name": category_name,
+            "description": description or f"Автоматически созданная категория: {category_name}"
+        }
+    }
+    
+    input_data_str = json.dumps(category_data)
+    payload = {"input_data": input_data_str}
+    
+    try:
+        response = requests.post(
+            f"{api.base_url}/api/v3/categories",
+            headers=api.form_headers,
+            data=payload,
+            timeout=30
+        )
+        result = response.json()
+        if result.get("response_status", {}).get("status") == "success":
+            new_id = result.get("category", {}).get("id")
+            print(f"✅ Категория '{category_name}' создана автоматически (ID: {new_id})")
+            return new_id
+        else:
+            print(f"❌ Ошибка создания категории: {result}")
+            return None
+    except Exception as e:
+        print(f"❌ Exception при создании категории: {e}")
+        return None
+
+
+
+def is_support_staff(telegram_user_id: str, username: str = None) -> bool:
+    """
+    Проверка: является ли пользователь сотрудником IT-поддержки.
+    Проверяет и по ID, и по username (если указан).
+    """
+    # Проверка по ID
+    if str(telegram_user_id) in TELEGRAM_SUPPORT_STAFF_IDS:
+        return True
+    # Проверка по username (если есть и список содержит username с @)
+    if username:
+        user_lower = username.lower()
+        for staff in TELEGRAM_SUPPORT_STAFF_IDS:
+            if isinstance(staff, str) and staff.lower() == user_lower:
+                return True
+    return False
+
+def is_duplicate(telegram_user_id: str, message_text: str, context_data: Dict) -> bool:
+    """Проверка на дубликат (тот же текст в течение 2 минут)."""
+    now = datetime.now()
+    
+    for ctx in context_data.get("active_contexts", []):
+        if (ctx.get("telegram_user_id") == telegram_user_id and 
+            ctx.get("last_message_text") == message_text):
+            
+            last_update = datetime.fromisoformat(ctx.get("last_update", ""))
+            if now - last_update < timedelta(seconds=DUPLICATE_TIMEOUT_SECONDS):
+                return True
+    return False
+
+def detect_category(text: str) -> Optional[str]:
+    """Определение категории по ключевым словам."""
+    text_lower = text.lower()
+    
+    for category_id, keywords in CATEGORY_KEYWORDS.items():
+        for keyword in keywords:
+            kw = keyword.lower().strip()
+            if not kw:
+                continue
+            # Для коротких токенов используем границы слов, чтобы избежать ложных срабатываний
+            if len(kw) <= 3 and kw.isalpha():
+                if re.search(r"\b" + re.escape(kw) + r"\b", text_lower):
+                    return category_id
+                continue
+            if kw in text_lower:
+                return category_id
+    
+    return "612"  # Прочее по умолчанию
+
+def is_greeting(text: str) -> bool:
+    """Проверка на приветствие."""
+    greetings = ["здравствуйте", "привет", "добрый день", "доброе утро", "добрый вечер", "hi", "hello"]
+    text_lower = text.lower().strip()
+    return any(g in text_lower for g in greetings) and len(text_lower.split()) <= 3
+
+
+def is_offtopic(text: str) -> bool:
+    """Грубая фильтрация не-IT и опасных оффтоп-сообщений."""
+    text_lower = text.lower()
+    for pattern in OFFTOPIC_PATTERNS:
+        if re.search(pattern, text_lower):
+            return True
+    return False
+
+
+def strip_bot_mentions(text: str) -> str:
+    """Удаляет прямые @упоминания бота из текста сообщения."""
+    cleaned = text
+    for alias in BOT_MENTION_ALIASES:
+        cleaned = re.sub(re.escape(alias), " ", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+def load_context() -> Dict[str, Any]:
+    """Загрузка контекста из файла."""
+    try:
+        with open(CONTEXT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {"active_contexts": [], "context_timeout_minutes": CONTEXT_TIMEOUT_MINUTES}
+
+def save_context(context: Dict[str, Any]):
+    """Сохранение контекста в файл."""
+    with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
+        json.dump(context, f, indent=2, ensure_ascii=False)
+
+def get_active_context(telegram_user_id: str, context_data: Dict[str, Any]) -> Optional[Dict]:
+    """Поиск активного контекста для пользователя."""
+    now = datetime.now()
+    
+    for ctx in context_data.get("active_contexts", []):
+        if ctx.get("telegram_user_id") == telegram_user_id:
+            # Проверяем таймаут
+            last_update = datetime.fromisoformat(ctx.get("last_update", ""))
+            if now - last_update < timedelta(minutes=CONTEXT_TIMEOUT_MINUTES):
+                return ctx
+            else:
+                # Контекст устарел - удаляем
+                context_data["active_contexts"] = [c for c in context_data["active_contexts"] if c != ctx]
+                save_context(context_data)
+    
+    return None
+
+
+def extract_potential_category(text: str) -> Optional[str]:
+    """
+    Попытка извлечь название новой категории из текста.
+    Ищем слова с заглавной буквы или специфические термины.
+    """
+    import re
+    # Простая эвристика: ищем слова длиннее 3 символов с заглавной буквы
+    words = re.findall(r'[А-ЯA-Z][а-яa-z]{3,}', text)
+    if words:
+        return words[0]  # Возвращаем первое подходящее слово
+    return None
+
+
+def is_new_topic(message_text: str, context_data: dict) -> bool:
+    """
+    Проверка: новая тема у пользователя?
+    Сравниваем категорию нового сообщения с текущей активной заявкой.
+    """
+    current_cat_id = detect_category(message_text)
+    
+    # Если в контексте есть инфо о последней категории
+    last_cat = context_data.get('last_category_id')
+    if last_cat and current_cat_id != last_cat:
+        return True
+    
+    return False
+
+def process_message(telegram_user_id: str, username: str, message_text: str, category_id_override: Optional[str] = None):
+    """Обработка сообщения из Telegram группы."""
+    message_text = strip_bot_mentions(message_text)
+    if not message_text:
+        return None, "ignored_bot_mention"
+    
+    # 1. Проверка: IT-персонал?
+    if is_support_staff(telegram_user_id, username):
+        return None, "ignored_support_staff"
+    
+    # 2. Проверка на приветствие
+    if is_greeting(message_text):
+        return None, "greeting"
+
+    # 2.1 Оффтоп/не-IT — полностью игнорируем без ответа
+    if is_offtopic(message_text):
+        return None, "ignored_offtopic"
+    
+    # 3. Загружаем контекст
+    context_data = load_context()
+    
+    # 4. Проверка на дубли (ОТКЛЮЧЕНО)
+    # if is_duplicate(telegram_user_id, message_text, context_data):
+    #     return None, "duplicate"
+    
+    # 5. Определяем категорию
+    category_id = category_id_override or detect_category(message_text)
+    
+    # 6. Если категория не ясна (Прочее) — задаем короткий вопрос,
+    # но только если категория не была передана извне явно.
+    if category_id == "612" and category_id_override is None:
+        # Проверяем, может это новая категория
+        potential_cat = extract_potential_category(message_text)
+        if potential_cat:
+            api = ManageEngineAPI()
+            new_cat_id = auto_create_category(api, potential_cat)
+            if new_cat_id:
+                category_id = new_cat_id
+                CATEGORY_KEYWORDS[new_cat_id] = [potential_cat.lower()]
+        else:
+            # Не поняли — спрашиваем коротко
+            return None, "clarification_needed"
+    
+    # 7. Проверяем активный контекст
+    active_ctx = get_active_context(telegram_user_id, context_data)
+    
+    # 8. Проверка: новая тема?
+    def attach_recent_images(api_obj: ManageEngineAPI, request_id: str):
+        now_ts = datetime.now().timestamp()
+        image_dir = Path(IMAGE_CACHE_DIR)
+        if not image_dir.exists():
+            return
+
+        candidates = []
+        for p in image_dir.glob("img_*"):
+            if not p.is_file():
+                continue
+            if p.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+                continue
+            age = now_ts - p.stat().st_mtime
+            if 0 <= age <= IMAGE_ATTACH_WINDOW_SECONDS:
+                candidates.append(p)
+
+        candidates.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        for p in candidates[:IMAGE_ATTACH_MAX_FILES]:
+            api_obj.attach_file_to_request(request_id, str(p), note_text="Telegram image")
+
+    if active_ctx:
+        if is_new_topic(message_text, active_ctx):
+            # Сбрасываем контекст - будет создана новая заявка
+            context_data["active_contexts"] = [c for c in context_data["active_contexts"] if c != active_ctx]
+            save_context(context_data)
+            active_ctx = None
+    
+    api = ManageEngineAPI()
+    
+    if active_ctx:
+        # Добавляем к существующей заявке
+        request_id = active_ctx["request_id"]
+        result = api.add_to_description(request_id, f"[{username}]: {message_text}")
+        
+        if result.get("response_status", {}).get("status") == "success":
+            attach_recent_images(api, request_id)
+            # Обновляем время
+            active_ctx["last_update"] = datetime.now().isoformat()
+            save_context(context_data)
+            return request_id, "updated"
+        else:
+            return request_id, "error"
+    else:
+        # Создаем новую заявку
+        subject = message_text[:100] if len(message_text) > 100 else message_text
+        udf_value = username if str(username).startswith("@") else f"@id{telegram_user_id}"
+        udf_fields = {"udf_sline_301": udf_value}
+        
+        requester_id = api.find_user_by_telegram_id(telegram_user_id)
+        
+        result = api.create_request(
+            subject=subject,
+            description=f"[{username}]: {message_text}",
+            requester_id=requester_id,
+            category_id=category_id if category_id != "612" else None,
+            udf_fields=udf_fields
+        )
+        
+        if result.get("response_status", {}).get("status") == "success":
+            request_id = result.get("request", {}).get("id")
+            attach_recent_images(api, request_id)
+            
+            # Сохраняем контекст
+            new_ctx = {
+                "telegram_user_id": telegram_user_id,
+                "username": username,
+                "request_id": request_id,
+                "last_update": datetime.now().isoformat(),
+                "last_message_text": message_text,
+                "last_category_id": category_id,
+                "chat_id": GROUP_CHAT_ID
+            }
+            context_data["active_contexts"].append(new_ctx)
+            save_context(context_data)
+            
+            return request_id, "created"
+        else:
+            return None, "error"
+
+if __name__ == "__main__":
+    # Тестовый сценарий
+    print("=== Тест мониторинга группы ТестИттехпод ===\n")
+    
+    # Симуляция сообщения
+    test_user_id = "669079966"
+    test_username = "Sergey L"
+    test_message = "Упал сервер 1С, не могу зайти в программу"
+    
+    print(f"Пользователь: {test_username} (ID: {test_user_id})")
+    print(f"Сообщение: {test_message}\n")
+    
+    request_id, status = process_message(test_user_id, test_username, test_message)
+    
+    if status == "created":
+        print(f"✅ Заявка №{request_id} создана")
+        print(f"Категория: ERP (609)")
+    elif status == "updated":
+        print(f"ℹ️ Добавлено к заявке №{request_id}")
+    elif status == "greeting":
+        print("👋 Приветствие - игнорируем")
+    else:
+        print("❌ Ошибка создания заявки")

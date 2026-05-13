@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>ManageEngine Knowledge Graph</title>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; }
+        #sidebar { width: 300px; background: #f4f4f4; padding: 15px; overflow-y: auto; border-right: 1px solid #ccc; }
+        #main { flex-grow: 1; display: flex; flex-direction: column; min-width: 0; }
+        #top-tabs { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #d9d9d9; background: #fafafa; }
+        .top-tab { border: 1px solid #cfd3d8; background: #ffffff; color: #1f2937; border-radius: 6px; padding: 7px 11px; cursor: pointer; font-size: 13px; }
+        .top-tab.active { background: #3558d8; color: #fff; border-color: #3558d8; }
+        #content-wrap { flex-grow: 1; min-height: 0; }
+        #graph-pane, #roadmap-pane { width: 100%; height: 100%; }
+        #graph-pane { display: block; }
+        #roadmap-pane { display: none; overflow-x: auto; overflow-y: auto; background: #f3f4f6; }
+        #graph-container { width: 100%; height: 100%; }
+        input[type="text"] { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; }
+        .legend { font-size: 12px; margin-top: 20px; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
+        .legend-color { width: 15px; height: 15px; margin-right: 8px; border-radius: 50%; }
+        .admin-bar { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+        .admin-btn { border: 1px solid #cfd3d8; background: #fff; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; }
+        .admin-status { font-size: 12px; color: #4b5563; }
+        .admin-editor { margin-top: 12px; display: none; }
+        .admin-editor textarea { width: 100%; height: 280px; box-sizing: border-box; font-family: Consolas, monospace; font-size: 12px; }
+        .admin-editor .row { margin-top: 8px; display: flex; gap: 8px; }
+
+        .roadmap-wrap { min-width: 0; padding: 34px 36px 60px; }
+        .roadmap-title { font-size: 20px; margin: 0 0 24px; color: #111827; }
+        .timeline { position: relative; height: 340px; min-width: 100%; }
+        .timeline-line { position: absolute; top: 150px; left: 24px; right: 24px; height: 3px; background: #262626; }
+        .stage { position: absolute; top: 0; width: 156px; margin-left: -78px; }
+        .stage-tag { display: inline-block; background: #3658d6; color: #fff; font-size: 11px; border-radius: 3px; padding: 2px 8px; margin-bottom: 8px; }
+        .stage-btn { border: 0; background: #3658d6; color: #fff; padding: 8px 10px; font-size: 12px; border-radius: 2px; cursor: pointer; width: 100%; text-align: center; }
+        .stage-dash-up { border-left: 2px dashed #6e7ecf; height: 48px; margin: 0 auto; width: 0; }
+        .stage-dot { width: 12px; height: 12px; border-radius: 50%; background: #3f59d8; margin: -6px auto 0; position: relative; z-index: 2; }
+        .stage-dash-down { border-left: 2px dashed #9ca3af; height: 34px; margin: 0 auto; width: 0; }
+        .stage-progress { margin-top: 8px; background: #e5e7eb; border-radius: 8px; height: 8px; overflow: hidden; }
+        .stage-progress > div { background: linear-gradient(90deg, #3b82f6, #22c55e); height: 100%; }
+        .stage-percent { margin-top: 5px; font-size: 11px; color: #1f2937; text-align: center; }
+        .stage-panel { display: none; margin-top: 8px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; padding: 10px; font-size: 12px; color: #111827; box-shadow: 0 2px 6px rgba(0,0,0,.06); }
+        .stage.open .stage-panel { display: block; }
+        .stage-panel ul { margin: 0; padding-left: 18px; }
+        .stage-panel li { margin: 4px 0; }
+    </style>
+</head>
+<body>
+
+<div id="sidebar">
+    <h2>Knowledge Graph</h2>
+    <p>Всего заявок: <span id="node-count">0</span></p>
+    <input type="text" id="search" placeholder="Поиск по заявкам...">
+    <div id="details" style="margin-top:20px; font-size: 13px;"></div>
+    
+    <div class="legend">
+        <h4>Легенда:</h4>
+        <div class="legend-item"><div class="legend-color" style="background: #FF6B6B;"></div> Зявки (Request)</div>
+        <div class="legend-item"><div class="legend-color" style="background: #4ECDC4;"></div> Категории</div>
+        <div class="legend-item"><div class="legend-color" style="background: #45B7D1;"></div> Центральный узел</div>
+    </div>
+    <div class="admin-bar">
+        <button id="admin-login" class="admin-btn">Войти как админ</button>
+        <button id="admin-logout" class="admin-btn" style="display:none;">Выйти</button>
+        <span id="admin-status" class="admin-status">Режим просмотра</span>
+    </div>
+    <div id="admin-editor" class="admin-editor">
+        <textarea id="roadmap-md"></textarea>
+        <div class="row">
+            <button id="roadmap-save" class="admin-btn">Сохранить roadmap</button>
+        </div>
+    </div>
+</div>
+
+<div id="main">
+    <div id="top-tabs">
+        <button class="top-tab active" data-pane="graph-pane">Граф</button>
+        <button class="top-tab" data-pane="roadmap-pane">Дорожная карта</button>
+    </div>
+    <div id="content-wrap">
+        <div id="graph-pane">
+            <div id="graph-container"></div>
+        </div>
+        <div id="roadmap-pane">
+            <div class="roadmap-wrap">
+                <h2 class="roadmap-title">Roadmap проекта</h2>
+                <div class="timeline" id="timeline">
+                    <div class="timeline-line"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let network = null;
+    let allNodes = [];
+    let allEdges = [];
+    let adminAuth = sessionStorage.getItem('roadmapAdminAuth') || '';
+    const fallbackRoadmapStages = [
+        {
+            code: 'A',
+            title: 'Intake IT-инцидентов',
+            progress: 78,
+            details: [
+                'Стабильный прием в рабочей группе.',
+                'Периодическая калибровка triage по реальным кейсам.',
+                'Игнор сообщений сотрудников техподдержки в intake-контуре.'
+            ]
+        },
+        {
+            code: 'B',
+            title: 'Кнопки и назначение',
+            progress: 5,
+            details: [
+                'Кнопка "Принять в работу" только для техпода.',
+                'Автоназначение на группу/исполнителя.',
+                'Логирование действия назначения.'
+            ]
+        },
+        {
+            code: 'C',
+            title: 'Ответ и закрытие',
+            progress: 8,
+            details: [
+                'Ответ техподдержки = завершение обработки.',
+                'Связка заявки с исполнителем.',
+                'Оценка полноты ответа/решения.'
+            ]
+        },
+        {
+            code: 'D',
+            title: 'Автор и теги',
+            progress: 72,
+            details: [
+                'Надежная привязка user_id/username.',
+                'Использование как тегов в заявке.',
+                'Сохранение связи при смене username.'
+            ]
+        },
+        {
+            code: 'E',
+            title: 'База знаний',
+            progress: 30,
+            details: [
+                'Сбор пар: Описание -> Решение.',
+                'Структурирование повторяющихся инцидентов.',
+                'Очистка шумных/дублирующих записей.'
+            ]
+        },
+        {
+            code: 'F',
+            title: 'Ответы до инцидента',
+            progress: 15,
+            details: [
+                'До 3 попыток помочь пользователю.',
+                'Если не помогло — перевод в инцидент.',
+                'Передача в техподдержку.'
+            ]
+        },
+        {
+            code: 'G',
+            title: 'Самообучение',
+            progress: 10,
+            details: [
+                'Контур обучения на базе знаний.',
+                'Контроль качества перед применением.',
+                'Применение только после тестового набора.'
+            ]
+        }
+    ];
+
+    // Загрузка данных
+    Promise.all([
+        fetch('graph.json').then(r => r.json()),
+        fetch(`roadmap.json?v=${Date.now()}`).then(r => r.ok ? r.json() : null).catch(() => null)
+    ])
+        .then(([graphData, roadmapData]) => {
+            allNodes = graphData.nodes;
+            allEdges = graphData.edges;
+            document.getElementById('node-count').innerText = allNodes.filter(n => n.type === 'request').length;
+            drawGraph(allNodes, allEdges);
+            setupSearch();
+            setupTabs();
+            setupAdminUi();
+
+            const stages = normalizeRoadmapStages(roadmapData);
+            renderRoadmap(stages);
+        });
+
+    function withAuthHeaders(extra) {
+        const headers = extra || {};
+        if (adminAuth) {
+            headers['Authorization'] = `Basic ${adminAuth}`;
+        }
+        return headers;
+    }
+
+    function setAdminMode(enabled, text) {
+        const loginBtn = document.getElementById('admin-login');
+        const logoutBtn = document.getElementById('admin-logout');
+        const status = document.getElementById('admin-status');
+        const editor = document.getElementById('admin-editor');
+        loginBtn.style.display = enabled ? 'none' : 'inline-block';
+        logoutBtn.style.display = enabled ? 'inline-block' : 'none';
+        editor.style.display = enabled ? 'block' : 'none';
+        status.textContent = text;
+    }
+
+    function setupAdminUi() {
+        const loginBtn = document.getElementById('admin-login');
+        const logoutBtn = document.getElementById('admin-logout');
+        const saveBtn = document.getElementById('roadmap-save');
+
+        loginBtn.addEventListener('click', async () => {
+            const user = prompt('Логин админа:', 'admin');
+            if (!user) return;
+            const pass = prompt('Пароль админа:');
+            if (pass === null) return;
+            const token = btoa(`${user}:${pass}`);
+
+            const resp = await fetch('/api/auth-check', { headers: { Authorization: `Basic ${token}` } });
+            if (!resp.ok) {
+                alert('Ошибка авторизации');
+                return;
+            }
+            adminAuth = token;
+            sessionStorage.setItem('roadmapAdminAuth', token);
+            setAdminMode(true, 'Режим администратора');
+            await loadRoadmapEditor();
+        });
+
+        logoutBtn.addEventListener('click', () => {
+            adminAuth = '';
+            sessionStorage.removeItem('roadmapAdminAuth');
+            setAdminMode(false, 'Режим просмотра');
+        });
+
+        saveBtn.addEventListener('click', async () => {
+            const text = document.getElementById('roadmap-md').value;
+            const resp = await fetch('/api/roadmap.md', {
+                method: 'PUT',
+                headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ content: text })
+            });
+            if (!resp.ok) {
+                alert('Не удалось сохранить roadmap');
+                return;
+            }
+            const roadmapResp = await fetch(`roadmap.json?v=${Date.now()}`);
+            if (roadmapResp.ok) {
+                const payload = await roadmapResp.json();
+                renderRoadmap(normalizeRoadmapStages(payload));
+            }
+            alert('Roadmap сохранен и пересобран');
+        });
+
+        if (adminAuth) {
+            fetch('/api/auth-check', { headers: withAuthHeaders({}) })
+                .then(resp => {
+                    if (!resp.ok) {
+                        throw new Error('auth');
+                    }
+                    setAdminMode(true, 'Режим администратора');
+                    return loadRoadmapEditor();
+                })
+                .catch(() => {
+                    adminAuth = '';
+                    sessionStorage.removeItem('roadmapAdminAuth');
+                    setAdminMode(false, 'Режим просмотра');
+                });
+        } else {
+            setAdminMode(false, 'Режим просмотра');
+        }
+    }
+
+    async function loadRoadmapEditor() {
+        const resp = await fetch('/api/roadmap.md', { headers: withAuthHeaders({}) });
+        if (!resp.ok) {
+            alert('Не удалось загрузить roadmap md');
+            return;
+        }
+        const data = await resp.json();
+        document.getElementById('roadmap-md').value = data.content || '';
+    }
+
+    function drawGraph(nodes, edges) {
+        const container = document.getElementById('graph-container');
+        const data = {
+            nodes: new vis.DataSet(nodes.map(n => {
+                let color = '#FF6B6B'; // Request
+                if (n.type === 'category') color = '#4ECDC4';
+                if (n.type === 'central') color = '#45B7D1';
+                return { 
+                    id: n.id, 
+                    label: n.label, 
+                    color: color, 
+                    title: n.title || n.label,
+                    group: n.group 
+                };
+            })),
+            edges: new vis.DataSet(edges.map(e => ({
+                from: e.from,
+                to: e.to,
+                label: e.label,
+                arrows: 'to'
+            })))
+        };
+
+        const options = {
+            nodes: { shape: 'dot', size: 16, font: { size: 12 } },
+            edges: { smooth: true, font: { size: 10 } },
+            physics: { enabled: true, stabilization: false },
+            interaction: { hover: true, tooltipDelay: 200 }
+        };
+
+        network = new vis.Network(container, data, options);
+        
+        network.on('selectNode', function (params) {
+            const nodeId = params.nodes[0];
+            const node = allNodes.find(n => n.id === nodeId);
+            if (node) {
+                let html = `<h3>${node.label}</h3>`;
+                html += `<p><b>Тип:</b> ${node.type}</p>`;
+                if (node.category) html += `<p><b>Категория:</b> ${node.category}</p>`;
+                if (node.title) html += `<p>${node.title.replace(/\n/g, '<br>')}</p>`;
+                document.getElementById('details').innerHTML = html;
+            }
+        });
+    }
+
+    function setupSearch() {
+        document.getElementById('search').addEventListener('input', function(e) {
+            const query = e.target.value.toLowerCase();
+            if (!query) {
+                drawGraph(allNodes, allEdges);
+                return;
+            }
+            const filteredNodes = allNodes.filter(n => 
+                n.label.toLowerCase().includes(query) || 
+                (n.title && n.title.toLowerCase().includes(query))
+            );
+            const nodeIds = new Set(filteredNodes.map(n => n.id));
+            const filteredEdges = allEdges.filter(e => nodeIds.has(e.from) || nodeIds.has(e.to));
+            drawGraph(filteredNodes, filteredEdges);
+        });
+    }
+
+    function setupTabs() {
+        const tabs = document.querySelectorAll('.top-tab');
+        tabs.forEach(tab => {
+            tab.addEventListener('click', () => {
+                tabs.forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                const pane = tab.getAttribute('data-pane');
+                document.getElementById('graph-pane').style.display = pane === 'graph-pane' ? 'block' : 'none';
+                document.getElementById('roadmap-pane').style.display = pane === 'roadmap-pane' ? 'block' : 'none';
+                if (pane === 'graph-pane' && network) {
+                    setTimeout(() => network.fit(), 80);
+                }
+            });
+        });
+    }
+
+    function normalizeRoadmapStages(payload) {
+        if (!payload || !Array.isArray(payload.stages) || payload.stages.length === 0) {
+            return fallbackRoadmapStages;
+        }
+
+        return payload.stages.map((stage, idx) => {
+            const code = String(stage.code || '').trim() || String.fromCharCode(65 + idx);
+            const title = String(stage.title || '').trim() || `Этап ${code}`;
+            const rawProgress = Number(stage.progress);
+            const progress = Number.isFinite(rawProgress) ? Math.max(0, Math.min(100, Math.round(rawProgress))) : 0;
+            const details = Array.isArray(stage.details)
+                ? stage.details.map(item => String(item || '').trim()).filter(Boolean)
+                : [];
+
+            return { code, title, progress, details };
+        });
+    }
+
+    function renderRoadmap(stages) {
+        const timeline = document.getElementById('timeline');
+        const roadmapPane = document.getElementById('roadmap-pane');
+        const roadmapWrap = document.querySelector('.roadmap-wrap');
+        const start = 90;
+        const step = 176;
+        const stageWidth = 156;
+        const oldStages = timeline.querySelectorAll('.stage');
+        oldStages.forEach(el => el.remove());
+
+        const stagesCount = Math.max(stages.length, 1);
+        const contentWidth = start * 2 + stageWidth + (stagesCount - 1) * step;
+        const paneWidth = Math.max((roadmapPane ? roadmapPane.clientWidth : 0) - 72, 0);
+        const timelineWidth = Math.max(contentWidth, paneWidth);
+        timeline.style.width = `${timelineWidth}px`;
+        if (roadmapWrap) {
+            roadmapWrap.style.width = `${timelineWidth + 72}px`;
+        }
+
+        stages.forEach((stage, idx) => {
+            const left = start + idx * step;
+            const box = document.createElement('div');
+            box.className = 'stage';
+            box.style.left = `${left}px`;
+            box.innerHTML = `
+                <div class="stage-tag">Этап ${stage.code}</div>
+                <button class="stage-btn">${stage.title}</button>
+                <div class="stage-dash-up"></div>
+                <div class="stage-dot"></div>
+                <div class="stage-dash-down"></div>
+                <div class="stage-progress"><div style="width:${stage.progress}%"></div></div>
+                <div class="stage-percent">${stage.progress}% исполнения</div>
+                <div class="stage-panel"><ul>${stage.details.map(d => `<li>${d}</li>`).join('')}</ul></div>
+            `;
+            const btn = box.querySelector('.stage-btn');
+            btn.addEventListener('click', () => {
+                box.classList.toggle('open');
+            });
+            timeline.appendChild(box);
+        });
+    }
+</script>
+</body>
+</html>

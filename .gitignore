@@ -1,0 +1,36 @@
+# secrets
+.env
+.env.dispatcher
+auth.json
+channel_directory.json
+
+# runtime/cache/logs
+logs/
+sessions/
+cache/
+audio_cache/
+image_cache/
+sandboxes/
+pastes/
+checkpoints/
+*.pid
+*.lock
+
+# local db/state
+*.db
+*.db-shm
+*.db-wal
+kanban.db
+processes.json
+gateway_state.json
+interrupt_debug.log
+.update_check
+
+# heavy/binary
+node/
+hermes-agent/
+OLDArchive/
+
+# temp
+*.tmp
+*.bak

@@ -1,0 +1,20 @@
+{
+  "description": "Maps Telegram user_id to ManageEngine internal ID and display info",
+  "mapping": [
+    {
+      "telegram_user_id": "669079966",
+      "me_user_id": "1011",
+      "display_name": "Sergey L",
+      "email": null,
+      "phone": "1110"
+    },
+    {
+      "telegram_user_id": "387861683",
+      "me_user_id": "TODO",
+      "display_name": "Aleksandr Shatskih",
+      "email": "TODO",
+      "phone": "TODO"
+    }
+  ],
+  "note": "Telegram user_id → IDTelegramUser (in ME SDP) → Display name or email (optional)"
+}

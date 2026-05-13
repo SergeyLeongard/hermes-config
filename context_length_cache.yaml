@@ -1,0 +1,2 @@
+context_lengths:
+  minimax/minimax-m2.5:free@https://openrouter.ai/api/v1: 32768

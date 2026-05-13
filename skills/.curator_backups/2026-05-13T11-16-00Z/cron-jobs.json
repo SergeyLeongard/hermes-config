@@ -1,0 +1,45 @@
+{
+  "jobs": [
+    {
+      "id": "a7db6da6c2e2",
+      "name": "Knowledge Base Sync (Daily)",
+      "prompt": "Run the knowledge base sync script: python3 /home/sadmin/.hermes/skills/software-development/manageengine-telegram-monitor/sync_knowledge.py",
+      "skills": [
+        "manageengine-fsm",
+        "manageengine-telegram-monitor"
+      ],
+      "skill": "manageengine-fsm",
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 3 * * *",
+        "display": "0 3 * * *"
+      },
+      "schedule_display": "0 3 * * *",
+      "repeat": {
+        "times": null,
+        "completed": 6
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-08T03:28:47.763101+00:00",
+      "next_run_at": "2026-05-14T03:00:00+00:00",
+      "last_run_at": "2026-05-13T03:00:58.528267+00:00",
+      "last_status": "error",
+      "last_error": "RuntimeError: HTTP 429: Provider returned error",
+      "last_delivery_error": null,
+      "deliver": "local",
+      "origin": null,
+      "enabled_toolsets": null,
+      "workdir": null
+    }
+  ],
+  "updated_at": "2026-05-13T03:00:58.528713+00:00"
+}
