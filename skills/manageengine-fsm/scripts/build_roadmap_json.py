@@ -58,12 +58,31 @@ def parse(md_text: str):
     return stages
 
 
+def calculate_overall_progress(stages: list[dict]) -> int:
+    total_items = 0
+    done_items = 0
+    for stage in stages:
+        details = stage.get("details") or []
+        total_items += len(details)
+        progress = int(stage.get("progress", 0))
+        done_items += round((progress / 100) * len(details))
+
+    if total_items == 0:
+        return 0
+
+    raw = (done_items / total_items) * 100
+    return max(0, min(100, int(round(raw))))
+
+
 def main():
     md_path = Path("/home/sadmin/.hermes/skills/manageengine-fsm/manageengine-telegram-monitor-ROADMAP.md")
     out_path = Path("/home/sadmin/.hermes/skills/manageengine-fsm/roadmap.json")
     text = md_path.read_text(encoding="utf-8")
     stages = parse(text)
-    payload = {"stages": stages}
+    payload = {
+        "overall_progress": calculate_overall_progress(stages),
+        "stages": stages,
+    }
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Wrote {out_path} with {len(stages)} stages")
 

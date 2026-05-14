@@ -29,6 +29,8 @@
 
         .roadmap-wrap { min-width: 0; padding: 34px 36px 60px; }
         .roadmap-title { font-size: 20px; margin: 0 0 24px; color: #111827; }
+        .roadmap-overall { margin: -10px 0 18px; font-size: 13px; color: #111827; }
+        .roadmap-overall b { color: #1d4ed8; }
         .timeline { position: relative; height: 340px; min-width: 100%; }
         .timeline-line { position: absolute; top: 150px; left: 24px; right: 24px; height: 3px; background: #262626; }
         .stage { position: absolute; top: 0; width: 156px; margin-left: -78px; }
@@ -85,6 +87,7 @@
         <div id="roadmap-pane">
             <div class="roadmap-wrap">
                 <h2 class="roadmap-title">Roadmap проекта</h2>
+                <div class="roadmap-overall" id="roadmap-overall">Общий прогресс: <b>0%</b></div>
                 <div class="timeline" id="timeline">
                     <div class="timeline-line"></div>
                 </div>
@@ -185,8 +188,8 @@
             setupTabs();
             setupAdminUi();
 
-            const stages = normalizeRoadmapStages(roadmapData);
-            renderRoadmap(stages);
+            const roadmap = normalizeRoadmapPayload(roadmapData);
+            renderRoadmap(roadmap.stages, roadmap.overallProgress);
         });
 
     function withAuthHeaders(extra) {
@@ -251,7 +254,8 @@
             const roadmapResp = await fetch(`roadmap.json?v=${Date.now()}`);
             if (roadmapResp.ok) {
                 const payload = await roadmapResp.json();
-                renderRoadmap(normalizeRoadmapStages(payload));
+                const roadmap = normalizeRoadmapPayload(payload);
+                renderRoadmap(roadmap.stages, roadmap.overallProgress);
             }
             alert('Roadmap сохранен и пересобран');
         });
@@ -363,12 +367,15 @@
         });
     }
 
-    function normalizeRoadmapStages(payload) {
+    function normalizeRoadmapPayload(payload) {
         if (!payload || !Array.isArray(payload.stages) || payload.stages.length === 0) {
-            return fallbackRoadmapStages;
+            return {
+                stages: fallbackRoadmapStages,
+                overallProgress: 0,
+            };
         }
 
-        return payload.stages.map((stage, idx) => {
+        const stages = payload.stages.map((stage, idx) => {
             const code = String(stage.code || '').trim() || String.fromCharCode(65 + idx);
             const title = String(stage.title || '').trim() || `Этап ${code}`;
             const rawProgress = Number(stage.progress);
@@ -379,10 +386,18 @@
 
             return { code, title, progress, details };
         });
+
+        const rawOverall = Number(payload.overall_progress);
+        const overallProgress = Number.isFinite(rawOverall)
+            ? Math.max(0, Math.min(100, Math.round(rawOverall)))
+            : 0;
+
+        return { stages, overallProgress };
     }
 
-    function renderRoadmap(stages) {
+    function renderRoadmap(stages, overallProgress) {
         const timeline = document.getElementById('timeline');
+        const overall = document.getElementById('roadmap-overall');
         const roadmapPane = document.getElementById('roadmap-pane');
         const roadmapWrap = document.querySelector('.roadmap-wrap');
         const start = 90;
@@ -398,6 +413,9 @@
         timeline.style.width = `${timelineWidth}px`;
         if (roadmapWrap) {
             roadmapWrap.style.width = `${timelineWidth + 72}px`;
+        }
+        if (overall) {
+            overall.innerHTML = `Общий прогресс: <b>${overallProgress}%</b>`;
         }
 
         stages.forEach((stage, idx) => {
