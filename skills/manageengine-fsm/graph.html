@@ -44,8 +44,13 @@
         .stage-percent { margin-top: 5px; font-size: 11px; color: #1f2937; text-align: center; }
         .stage-panel { display: none; margin-top: 8px; background: #ffffff; border: 1px solid #d1d5db; border-radius: 4px; padding: 10px; font-size: 12px; color: #111827; box-shadow: 0 2px 6px rgba(0,0,0,.06); }
         .stage.open .stage-panel { display: block; }
-        .stage-panel ul { margin: 0; padding-left: 18px; }
-        .stage-panel li { margin: 4px 0; }
+        .stage-panel ul { margin: 0; padding: 0; list-style: none; }
+        .stage-panel li { margin: 6px 0; padding: 7px 8px; border: 1px solid #d1d5db; border-radius: 6px; background: #f9fafb; }
+        .stage-panel li.done { background: #eaf8ee; border-color: #9fd7ad; }
+        .stage-panel li.partial { background: #fff3e8; border-color: #f2c79c; }
+        .stage-panel li.pending { background: #f9fafb; border-color: #d1d5db; }
+        .roadmap-admin-tools { display: none; margin: 8px 0 14px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; background: #fff; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .roadmap-admin-tools .hint { font-size: 12px; color: #374151; margin-right: 4px; }
     </style>
 </head>
 <body>
@@ -88,6 +93,19 @@
             <div class="roadmap-wrap">
                 <h2 class="roadmap-title">Roadmap проекта</h2>
                 <div class="roadmap-overall" id="roadmap-overall">Общий прогресс: <b>0%</b></div>
+                <div class="roadmap-overall" id="roadmap-overall-count">Выполнено задач: <b>0/0</b></div>
+                <div id="roadmap-admin-tools" class="roadmap-admin-tools">
+                    <span class="hint">Админ-режим: отмечай задачи этапа</span>
+                    <select id="stage-select-main" class="admin-btn"></select>
+                    <select id="task-select-main" class="admin-btn"></select>
+                    <select id="task-status-main" class="admin-btn">
+                        <option value="pending">0% (Не начато)</option>
+                        <option value="partial">50% (В работе)</option>
+                        <option value="done">100% (Готово)</option>
+                    </select>
+                    <button id="task-apply-main" class="admin-btn">Применить к задаче</button>
+                    <button id="roadmap-save-main" class="admin-btn">Сохранить roadmap</button>
+                </div>
                 <div class="timeline" id="timeline">
                     <div class="timeline-line"></div>
                 </div>
@@ -189,7 +207,7 @@
             setupAdminUi();
 
             const roadmap = normalizeRoadmapPayload(roadmapData);
-            renderRoadmap(roadmap.stages, roadmap.overallProgress);
+            renderRoadmap(roadmap.stages, roadmap.overallProgress, roadmap.overallDoneItems, roadmap.overallTotalItems);
         });
 
     function withAuthHeaders(extra) {
@@ -205,9 +223,11 @@
         const logoutBtn = document.getElementById('admin-logout');
         const status = document.getElementById('admin-status');
         const editor = document.getElementById('admin-editor');
+        const tools = document.getElementById('roadmap-admin-tools');
         loginBtn.style.display = enabled ? 'none' : 'inline-block';
         logoutBtn.style.display = enabled ? 'inline-block' : 'none';
         editor.style.display = enabled ? 'block' : 'none';
+        tools.style.display = enabled ? 'flex' : 'none';
         status.textContent = text;
     }
 
@@ -215,6 +235,11 @@
         const loginBtn = document.getElementById('admin-login');
         const logoutBtn = document.getElementById('admin-logout');
         const saveBtn = document.getElementById('roadmap-save');
+        const mdArea = document.getElementById('roadmap-md');
+        const saveBtnMain = document.getElementById('roadmap-save-main');
+        const taskApplyBtnMain = document.getElementById('task-apply-main');
+        const taskStatusMain = document.getElementById('task-status-main');
+        const stageSelectMain = document.getElementById('stage-select-main');
 
         loginBtn.addEventListener('click', async () => {
             const user = prompt('Логин админа:', 'admin');
@@ -241,6 +266,22 @@
         });
 
         saveBtn.addEventListener('click', async () => {
+            await saveRoadmapFromEditor();
+        });
+
+        saveBtnMain.addEventListener('click', async () => {
+            await saveRoadmapFromEditor();
+        });
+
+        taskApplyBtnMain.addEventListener('click', () => {
+            applyTaskDoneToMarkdown();
+        });
+
+        stageSelectMain.addEventListener('change', () => {
+            rebuildTaskSelect();
+        });
+
+        async function saveRoadmapFromEditor() {
             const text = document.getElementById('roadmap-md').value;
             const resp = await fetch('/api/roadmap.md', {
                 method: 'PUT',
@@ -248,16 +289,26 @@
                 body: JSON.stringify({ content: text })
             });
             if (!resp.ok) {
-                alert('Не удалось сохранить roadmap');
+                let msg = `Не удалось сохранить roadmap (HTTP ${resp.status})`;
+                try {
+                    const data = await resp.json();
+                    if (data && data.error) msg += `: ${data.error}`;
+                } catch (_) {}
+                alert(msg);
                 return;
             }
             const roadmapResp = await fetch(`roadmap.json?v=${Date.now()}`);
             if (roadmapResp.ok) {
                 const payload = await roadmapResp.json();
                 const roadmap = normalizeRoadmapPayload(payload);
-                renderRoadmap(roadmap.stages, roadmap.overallProgress);
+                renderRoadmap(roadmap.stages, roadmap.overallProgress, roadmap.overallDoneItems, roadmap.overallTotalItems);
             }
             alert('Roadmap сохранен и пересобран');
+        }
+
+        mdArea.addEventListener('input', () => {
+            rebuildStageSelect();
+            rebuildTaskSelect();
         });
 
         if (adminAuth) {
@@ -287,6 +338,103 @@
         }
         const data = await resp.json();
         document.getElementById('roadmap-md').value = data.content || '';
+        rebuildStageSelect();
+        rebuildTaskSelect();
+    }
+
+    function rebuildStageSelect() {
+        const selectMain = document.getElementById('stage-select-main');
+        const text = document.getElementById('roadmap-md').value || '';
+        const lines = text.split('\n');
+        const items = [];
+        const re = /^##\s+Этап\s+([A-Za-z0-9]+)\s*[—-]\s*(.+)$/;
+        for (const line of lines) {
+            const m = line.trim().match(re);
+            if (m) {
+                items.push({ code: m[1], title: m[2] });
+            }
+        }
+        const options = items.map(x => `<option value="${x.code}">Этап ${x.code}: ${x.title}</option>`).join('');
+        selectMain.innerHTML = options;
+    }
+
+    function rebuildTaskSelect(preferredLineIdx) {
+        const stageCode = document.getElementById('stage-select-main').value;
+        const taskSelect = document.getElementById('task-select-main');
+        const text = document.getElementById('roadmap-md').value || '';
+        const lines = text.split('\n');
+        const headerRe = /^##\s+Этап\s+([A-Za-z0-9]+)\s*[—-]\s*(.+)$/;
+        const itemRe = /^(\s*\d+\.\s+)(.+?)(\s*-\s*(?:Готово|В работе))?\s*[;.]?\s*$/i;
+        let inTarget = false;
+        const items = [];
+        for (let i = 0; i < lines.length; i++) {
+            const trimmed = lines[i].trim();
+            const hm = trimmed.match(headerRe);
+            if (hm) {
+                if (inTarget) break;
+                inTarget = hm[1] === stageCode;
+                continue;
+            }
+            if (!inTarget) continue;
+            const im = lines[i].match(itemRe);
+            if (im) {
+                const txt = im[2].trim();
+                const tail = String(im[3] || '').toLowerCase();
+                const state = tail.includes('готово') ? 'done' : (tail.includes('работе') ? 'partial' : 'pending');
+                items.push({ idx: i, text: txt, state });
+            }
+        }
+        taskSelect.innerHTML = items.map((x, k) => `<option value="${x.idx}" data-state="${x.state}">${k + 1}. ${x.text}</option>`).join('');
+        let selected = null;
+        const targetValue = (preferredLineIdx !== undefined && preferredLineIdx !== null)
+            ? String(preferredLineIdx)
+            : '';
+        if (targetValue) {
+            for (let i = 0; i < taskSelect.options.length; i++) {
+                if (taskSelect.options[i].value === targetValue) {
+                    taskSelect.selectedIndex = i;
+                    selected = taskSelect.options[i];
+                    break;
+                }
+            }
+        }
+        if (!selected) {
+            selected = taskSelect.options[taskSelect.selectedIndex] || taskSelect.options[0] || null;
+        }
+        taskStatusMain.value = selected ? (selected.dataset.state || 'pending') : 'pending';
+        taskSelect.onchange = () => {
+            const opt = taskSelect.options[taskSelect.selectedIndex];
+            taskStatusMain.value = !!opt ? (opt.dataset.state || 'pending') : 'pending';
+        };
+    }
+
+    function normalizeRoadmapItemLine(line, state) {
+        const m = line.match(/^(\s*\d+\.\s+)(.+?)(?:\s*-\s*(?:Готово|В работе))?\s*([;.]?)\s*$/i);
+        if (!m) return line;
+        const prefix = m[1];
+        const text = m[2].trim();
+        const punct = m[3] || '';
+        const suffix = state === 'done' ? ' - Готово' : (state === 'partial' ? ' - В работе' : '');
+        return `${prefix}${text}${suffix}${punct}`;
+    }
+
+    function applyTaskDoneToMarkdown() {
+        const taskSelect = document.getElementById('task-select-main');
+        const state = (document.getElementById('task-status-main').value || 'pending');
+        if (!taskSelect.value) {
+            alert('Выбери задачу');
+            return;
+        }
+        const lineIdx = Number(taskSelect.value);
+        const area = document.getElementById('roadmap-md');
+        const lines = area.value.split('\n');
+        if (!Number.isFinite(lineIdx) || lineIdx < 0 || lineIdx >= lines.length) {
+            alert('Некорректная задача');
+            return;
+        }
+        lines[lineIdx] = normalizeRoadmapItemLine(lines[lineIdx], state);
+        area.value = lines.join('\n');
+        rebuildTaskSelect(lineIdx);
     }
 
     function drawGraph(nodes, edges) {
@@ -372,6 +520,8 @@
             return {
                 stages: fallbackRoadmapStages,
                 overallProgress: 0,
+                overallDoneItems: 0,
+                overallTotalItems: 0,
             };
         }
 
@@ -384,7 +534,16 @@
                 ? stage.details.map(item => String(item || '').trim()).filter(Boolean)
                 : [];
 
-            return { code, title, progress, details };
+            const detailStates = Array.isArray(stage.detail_states)
+                ? stage.detail_states.map(x => {
+                    const v = String(x || '').toLowerCase();
+                    if (v === 'done') return 'done';
+                    if (v === 'partial') return 'partial';
+                    return 'pending';
+                })
+                : details.map(() => 'pending');
+
+            return { code, title, progress, details, detailStates };
         });
 
         const rawOverall = Number(payload.overall_progress);
@@ -392,12 +551,18 @@
             ? Math.max(0, Math.min(100, Math.round(rawOverall)))
             : 0;
 
-        return { stages, overallProgress };
+        const rawDone = Number(payload.overall_done_items);
+        const rawTotal = Number(payload.overall_total_items);
+        const overallDoneItems = Number.isFinite(rawDone) ? Math.max(0, Math.round(rawDone)) : 0;
+        const overallTotalItems = Number.isFinite(rawTotal) ? Math.max(0, Math.round(rawTotal)) : 0;
+
+        return { stages, overallProgress, overallDoneItems, overallTotalItems };
     }
 
-    function renderRoadmap(stages, overallProgress) {
+    function renderRoadmap(stages, overallProgress, overallDoneItems, overallTotalItems) {
         const timeline = document.getElementById('timeline');
         const overall = document.getElementById('roadmap-overall');
+        const overallCount = document.getElementById('roadmap-overall-count');
         const roadmapPane = document.getElementById('roadmap-pane');
         const roadmapWrap = document.querySelector('.roadmap-wrap');
         const start = 90;
@@ -417,12 +582,19 @@
         if (overall) {
             overall.innerHTML = `Общий прогресс: <b>${overallProgress}%</b>`;
         }
+        if (overallCount) {
+            overallCount.innerHTML = `Выполнено задач: <b>${overallDoneItems}/${overallTotalItems}</b>`;
+        }
 
         stages.forEach((stage, idx) => {
             const left = start + idx * step;
             const box = document.createElement('div');
             box.className = 'stage';
             box.style.left = `${left}px`;
+            const itemsHtml = stage.details.map((d, i) => {
+                const st = stage.detailStates[i] || 'pending';
+                return `<li class="${st}">${d}</li>`;
+            }).join('');
             box.innerHTML = `
                 <div class="stage-tag">Этап ${stage.code}</div>
                 <button class="stage-btn">${stage.title}</button>
@@ -431,7 +603,7 @@
                 <div class="stage-dash-down"></div>
                 <div class="stage-progress"><div style="width:${stage.progress}%"></div></div>
                 <div class="stage-percent">${stage.progress}% исполнения</div>
-                <div class="stage-panel"><ul>${stage.details.map(d => `<li>${d}</li>`).join('')}</ul></div>
+                <div class="stage-panel"><ul>${itemsHtml}</ul></div>
             `;
             const btn = box.querySelector('.stage-btn');
             btn.addEventListener('click', () => {

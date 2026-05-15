@@ -102,7 +102,7 @@ def _classify_with_llm(text: str) -> Tuple[Optional[bool], Optional[str], float,
         "Поля: triage (IT|NON_IT|UNSURE), is_it (boolean|null), category_id (string), confidence (0..1). "
         f"Допустимые category_id: {', '.join(CATEGORY_IDS)}. "
         "Правила: "
-        "1) IT: реальные проблемы/запросы по 1С, ERP, WMS, ELMA, сети/интернету/Wi-Fi/VPN, почте/Outlook, логину/паролю/доступу, принтерам, ПК/монитору/мыши, телефонии, безопасности, корпоративным сайтам/порталам. "
+        "1) IT: реальные проблемы/запросы по 1С, ERP, WMS, ELMA, сети/интернету/Wi-Fi/VPN, почте/Outlook, логину/паролю/доступу, принтерам, ПК/монитору/мыши, телефонии, безопасности, корпоративным сайтам/порталам, видеонаблюдению (IP-камеры, NVR/DVR, PoE, сетевые регистраторы). "
         "2) NON_IT: еда, быт, здоровье, транспорт, оффтоп, шутки, личное, политика, война, бытовые задачи. "
         "3) Если сообщение смешанное, но есть реальная IT-проблема — triage=IT. "
         "4) Вредные/абсурдные/троллинговые предложения (например залить сервер водой) — triage=NON_IT. "
@@ -115,7 +115,15 @@ def _classify_with_llm(text: str) -> Tuple[Optional[bool], Optional[str], float,
 
     use_n8n_webhook = "/webhook/" in CLASSIFIER_BASE_URL
     if use_n8n_webhook:
-        payload = {"message": text[:1200]}
+        payload = {
+            "message": text[:1200],
+            "system_prompt": prompt,
+            "category_ids": CATEGORY_IDS,
+            "meta": {
+                "source": "dispatcher_bot",
+                "version": "it-triage-v2",
+            },
+        }
         headers = {"Content-Type": "application/json"}
     else:
         payload = {
@@ -173,6 +181,8 @@ def _classify_with_llm(text: str) -> Tuple[Optional[bool], Optional[str], float,
                     triage = "NON_IT"
                 else:
                     triage = "UNSURE"
+            if triage == "NON_IT" and _looks_like_camera_it_request(text):
+                return True, "605", max(conf, 0.85), "IT"
             return is_it, cat, conf, triage
         except requests.exceptions.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else None
@@ -204,6 +214,38 @@ def _parse_clarify_status(status: str) -> Optional[str]:
     if len(parts) < 2:
         return None
     return parts[1]
+
+
+def _looks_like_camera_it_request(text: str) -> bool:
+    t = (text or "").lower()
+    camera_terms = [
+        "камера",
+        "камеры",
+        "видеонаблю",
+        "ip-кам",
+        "nvr",
+        "dvr",
+        "poe",
+        "регистратор",
+        "cctv",
+    ]
+    it_terms = [
+        "подключ",
+        "сеть",
+        "сетев",
+        "коммутатор",
+        "настрой",
+        "доступ",
+        "интернет",
+        "пк",
+        "рабоч",
+        "осмотр",
+        "монтаж",
+        "наблюдени",
+    ]
+    has_camera = any(x in t for x in camera_terms)
+    has_it = any(x in t for x in it_terms)
+    return has_camera and (has_it or "видеонаблю" in t)
 
 
 def _is_prompt_injection(text: str) -> bool:

@@ -29,5 +29,9 @@ Use this command in a separate chat window for mail intake implementation only.
 ## Source of Truth
 
 1. `docs/tz/manageengine-telegram-monitor-TECH_SPEC.md` section 47.
-2. `docs/tz/manageengine-telegram-monitor-ROADMAP.md` stage 1 mail intake item.
+2. Server roadmap: `/home/sadmin/.hermes/skills/manageengine-fsm/manageengine-telegram-monitor-ROADMAP.md` (primary source).
 3. Unified identities: `skills/manageengine-fsm/user_mapping.json` (see `/manageengine-identity-mapping`).
+
+## Note
+
+1. Local `docs/tz/manageengine-telegram-monitor-ROADMAP.md` is a mirror copy only.
