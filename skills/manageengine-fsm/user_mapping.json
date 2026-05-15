@@ -1,35 +1,36 @@
 {
-  "version": 2,
-  "updated_at": "2026-05-13T00:00:00Z",
-  "fallback_requester": "sadmin",
+  "version": 1,
+  "updated_at": "2026-05-14",
+  "notes": "Unified identity mapping: telegram <-> email <-> ServiceDesk requester",
   "mapping": {
     "by_telegram_user_id": {
-      "669079966": {
-        "requester_id": "308",
-        "requester_name": "Сергей Леонгард",
-        "last_seen_username": "@sergey_al5",
-        "updated_at": "2026-05-13T21:35:00Z",
-        "source": "confirmed"
-      },
       "216995471": {
         "requester_id": "329",
         "requester_name": "Нурберген Сауриков",
-        "last_seen_username": "@northmund95",
-        "updated_at": "2026-05-13T00:00:00Z",
-        "source": "confirmed"
+        "status": "confirmed",
+        "source": "manual"
       }
+    },
+    "by_email": {}
+  },
+  "identities": [
+    {
+      "requester_id": "308",
+      "requester_name": "Сергей Леонгард",
+      "telegram_user_id": "",
+      "telegram_username": "@sergeyal",
+      "email": "",
+      "status": "confirmed",
+      "source": "manual"
+    },
+    {
+      "requester_id": "329",
+      "requester_name": "Нурберген Сауриков",
+      "telegram_user_id": "216995471",
+      "telegram_username": "@northmund95",
+      "email": "",
+      "status": "confirmed",
+      "source": "manual"
     }
-  },
-  "notes": {
-    "legacy_confirmed_username_only": [
-      {
-        "telegram_username": "@sergeyal",
-        "requester_id": "308",
-        "requester_name": "Сергей Леонгард",
-        "status": "confirmed_username_only",
-        "comment": "Требуется numeric telegram_user_id для переноса в by_telegram_user_id"
-      }
-    ]
-  },
-  "conflicts": []
+  ]
 }

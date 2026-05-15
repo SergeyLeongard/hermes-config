@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, "/home/sadmin/.hermes/skills/manageengine-fsm")
 from api_wrapper import ManageEngineAPI
+from dispatcher_core import create_incident, update_incident
 
 
 GROUP_CHAT_ID = "-1003990457960"
@@ -242,12 +243,11 @@ def process_message(
     if decision == "clarify" and chosen_ctx:
         return chosen_ctx.get("request_id"), f"clarify_needed:{chosen_ctx.get('request_id')}:{score:.3f}"
 
-    api = ManageEngineAPI()
-
     if decision == "update" and chosen_ctx:
         request_id = chosen_ctx["request_id"]
-        result = api.add_to_description(request_id, f"[{username}]: {message_text}")
-        if result.get("response_status", {}).get("status") == "success":
+        result = update_incident(source_label="telegram", author_label=username, body_text=message_text, request_id=request_id)
+        if result.get("ok") == "1":
+            api = ManageEngineAPI()
             attach_recent_images(api, request_id)
             chosen_ctx["last_update"] = datetime.now().isoformat()
             chosen_ctx["last_message_text"] = message_text
@@ -256,20 +256,21 @@ def process_message(
             return request_id, "updated"
         return request_id, "error"
 
-    subject = message_text[:100] if len(message_text) > 100 else message_text
     udf_value = username if str(username).startswith("@") else f"@id{telegram_user_id}"
     udf_fields = {"udf_sline_301": udf_value}
+    api = ManageEngineAPI()
     requester_id = api.find_user_by_telegram_id(telegram_user_id)
 
-    result = api.create_request(
-        subject=subject,
-        description=f"[{username}]: {message_text}",
+    result = create_incident(
+        source_label="telegram",
+        author_label=username,
+        body_text=message_text,
         requester_id=requester_id,
         category_id=category_id if category_id != "612" else None,
         udf_fields=udf_fields,
     )
-    if result.get("response_status", {}).get("status") == "success":
-        request_id = result.get("request", {}).get("id")
+    if result.get("ok") == "1":
+        request_id = result.get("request_id")
         attach_recent_images(api, request_id)
         context_data["active_contexts"].append(
             {

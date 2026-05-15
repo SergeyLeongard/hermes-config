@@ -13,8 +13,8 @@
         .top-tab.active { background: #3558d8; color: #fff; border-color: #3558d8; }
         #content-wrap { flex-grow: 1; min-height: 0; }
         #graph-pane, #roadmap-pane { width: 100%; height: 100%; }
-        #graph-pane { display: block; }
-        #roadmap-pane { display: none; overflow-x: auto; overflow-y: auto; background: #f3f4f6; }
+        #graph-pane { display: none; }
+        #roadmap-pane { display: block; overflow-x: auto; overflow-y: auto; background: #f3f4f6; }
         #graph-container { width: 100%; height: 100%; }
         input[type="text"] { width: 100%; padding: 8px; margin-bottom: 10px; box-sizing: border-box; }
         .legend { font-size: 12px; margin-top: 20px; }
@@ -77,8 +77,8 @@
 
 <div id="main">
     <div id="top-tabs">
-        <button class="top-tab active" data-pane="graph-pane">Граф</button>
-        <button class="top-tab" data-pane="roadmap-pane">Дорожная карта</button>
+        <button class="top-tab active" data-pane="roadmap-pane">Дорожная карта</button>
+        <button class="top-tab" data-pane="graph-pane">Граф</button>
     </div>
     <div id="content-wrap">
         <div id="graph-pane">

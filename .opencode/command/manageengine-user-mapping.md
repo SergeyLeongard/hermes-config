@@ -8,7 +8,7 @@ Use this command in a separate chat window for user mapping tasks only.
 
 ## Scope
 
-1. Work only on `IDUserTelegram -> requester` mapping.
+1. Work on unified identity mapping: `telegram <-> email <-> requester`.
 2. Do not change triage logic unless explicitly requested.
 3. Keep production-safe fallback: unknown user -> `sadmin`.
 
@@ -16,13 +16,13 @@ Use this command in a separate chat window for user mapping tasks only.
 
 1. Server roadmap: `/home/sadmin/.hermes/skills/manageengine-fsm/manageengine-telegram-monitor-ROADMAP.md`.
 2. Tech spec: `docs/tz/manageengine-telegram-monitor-TECH_SPEC.md` sections 44-45.
-3. Mapping file: `skills/software-development/manageengine-telegram-monitor/user_mapping.json`.
+3. Unified mapping file: `skills/manageengine-fsm/user_mapping.json`.
 
 ## Required Behavior
 
-1. Match by `telegram_user_id` first.
-2. If not found, match by normalized `telegram_username` (`@lowercase`).
-3. If still not found, use requester `sadmin`.
+1. Match by `telegram_user_id` first for Telegram channel.
+2. Match by `email` first for Mail channel.
+3. If not found in mapping, fallback to SDP lookup (for email), then `sadmin`.
 4. Always include UDF `IDUserTelegram` in created requests.
 
 ## Current Confirmed Mappings

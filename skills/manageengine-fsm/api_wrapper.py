@@ -8,6 +8,7 @@ import os
 import json
 import requests
 from typing import Optional, Dict, Any
+from urllib.parse import quote_plus
 
 class ManageEngineAPI:
     def __init__(self):
@@ -20,6 +21,7 @@ class ManageEngineAPI:
             "USER_MAPPING_PATH",
             "/home/sadmin/.hermes/skills/manageengine-fsm/user_mapping.json",
         )
+        self.fallback_requester_id = os.getenv("MANAGEENGINE_FALLBACK_REQUESTER_ID", "1011").strip() or "1011"
         
         if not self.api_key:
             raise ValueError("MANAGEENGINE_API_KEY not set")
@@ -59,18 +61,22 @@ class ManageEngineAPI:
         except requests.exceptions.RequestException as e:
             return {"error": str(e), "response_status": {"status": "failed"}}
     
+    def _load_user_mapping(self) -> Dict[str, Any]:
+        try:
+            with open(self.user_mapping_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
     def find_user_by_telegram_id(self, telegram_user_id: str) -> Optional[str]:
         """Return requester_id from local ID mapping, fallback to sadmin."""
-        default_requester = "1011"  # sadmin
+        default_requester = self.fallback_requester_id
         telegram_id = str(telegram_user_id or "").strip()
         if not telegram_id:
             return default_requester
 
-        try:
-            with open(self.user_mapping_path, "r", encoding="utf-8") as f:
-                mapping_data = json.load(f)
-        except Exception:
-            return default_requester
+        mapping_data = self._load_user_mapping()
 
         by_id = (
             mapping_data.get("mapping", {})
@@ -82,6 +88,80 @@ class ManageEngineAPI:
 
         requester_id = str(entry.get("requester_id", "")).strip()
         return requester_id if requester_id else default_requester
+
+    def find_user_by_email(self, sender_email: str) -> Optional[str]:
+        """Return requester_id by sender email, fallback to sadmin on conflict/miss."""
+        default_requester = self.fallback_requester_id
+        email = str(sender_email or "").strip().lower()
+        if not email:
+            return default_requester
+
+        mapping_data = self._load_user_mapping()
+        by_email = (
+            mapping_data.get("mapping", {})
+            .get("by_email", {})
+        )
+        entry = by_email.get(email)
+        if isinstance(entry, dict):
+            requester_id = str(entry.get("requester_id", "")).strip()
+            if requester_id:
+                return requester_id
+
+        try:
+            # Instance-specific behavior: requesters endpoint is invalid; users endpoint is valid.
+            # 1) Try server-side search on users.
+            search_payload = {
+                "list_info": {
+                    "start_index": 1,
+                    "row_count": 100,
+                    "search_fields": {"email_id": email},
+                }
+            }
+            endpoint = f"users?input_data={quote_plus(json.dumps(search_payload, ensure_ascii=False))}"
+            api_result = self._make_request("GET", endpoint)
+            candidates = []
+            for item in api_result.get("users", []) or []:
+                item_email = str(item.get("email_id") or "").strip().lower()
+                if item_email == email:
+                    candidate_id = str(item.get("id") or "").strip()
+                    if candidate_id:
+                        candidates.append(candidate_id)
+
+            # 2) Fallback to paginated scan when search_fields is ignored by backend.
+            if not candidates:
+                start_index = 1
+                row_count = 200
+                max_rows = 5000
+                seen_rows = 0
+                while seen_rows < max_rows:
+                    page_payload = {"list_info": {"start_index": start_index, "row_count": row_count}}
+                    page_endpoint = f"users?input_data={quote_plus(json.dumps(page_payload, ensure_ascii=False))}"
+                    page = self._make_request("GET", page_endpoint)
+                    users = page.get("users", []) or []
+                    if not users:
+                        break
+                    seen_rows += len(users)
+                    for item in users:
+                        item_email = str(item.get("email_id") or "").strip().lower()
+                        if item_email == email:
+                            candidate_id = str(item.get("id") or "").strip()
+                            if candidate_id:
+                                candidates.append(candidate_id)
+                    list_info = page.get("list_info", {}) or {}
+                    if not list_info.get("has_more_rows"):
+                        break
+                    start_index += row_count
+
+            unique_ids = sorted(set(candidates))
+            if len(unique_ids) == 1:
+                return unique_ids[0]
+            if len(unique_ids) > 1:
+                # Ambiguous email ownership: keep production-safe fallback.
+                return default_requester
+        except Exception:
+            return default_requester
+
+        return default_requester
     
     def create_request(self, subject: str, description: str, 
                       requester_id: str = "1011",
@@ -148,6 +228,16 @@ class ManageEngineAPI:
             update_data: Словарь с полями для обновления
         """
         return self._make_request("PUT", f"requests/{request_id}", {"request": update_data})
+
+    def add_note(self, request_id: str, note_text: str) -> Dict[str, Any]:
+        """Add note/comment to request discussion."""
+        note_data = {
+            "note": {
+                "description": note_text,
+                "show_to_requester": True,
+            }
+        }
+        return self._make_request("POST", f"requests/{request_id}/notes", note_data)
     
     def add_to_description(self, request_id: str, additional_text: str) -> Dict[str, Any]:
         """
