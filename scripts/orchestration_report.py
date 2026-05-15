@@ -119,6 +119,19 @@ def _identity_summary_lines(limit: int = 3) -> List[str]:
     return picks
 
 
+def _identity_coverage_line() -> str:
+    mapping = _load_json(MAPPING_PATH, {})
+    identities = mapping.get("identities", []) if isinstance(mapping, dict) else []
+    by_tg = (mapping.get("mapping", {}).get("by_telegram_user_id", {}) or {}) if isinstance(mapping, dict) else {}
+    by_email = (mapping.get("mapping", {}).get("by_email", {}) or {}) if isinstance(mapping, dict) else {}
+    with_tg_id = sum(1 for x in identities if str(x.get("telegram_user_id") or "").strip())
+    with_email = sum(1 for x in identities if str(x.get("email") or "").strip())
+    return (
+        f"- Покрытие: identities={len(identities)} with_tg_id={with_tg_id} "
+        f"with_email={with_email} by_tg_id={len(by_tg)} by_email={len(by_email)}"
+    )
+
+
 def build_report() -> str:
     identity_line = _read_last_match(
         IDENTITY_LOG,
@@ -149,6 +162,7 @@ def build_report() -> str:
         lines.extend(identity_examples)
     else:
         lines.append("- Нет новых подтвержденных связей auto-sync")
+    lines.append(_identity_coverage_line())
 
     lines.append("")
     lines.append("b) База заявок")

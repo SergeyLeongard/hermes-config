@@ -4,6 +4,8 @@ description: Start focused mail intake implementation workflow
 
 # ManageEngine Mail Dispatcher Window
 
+> Deprecated alias: use `/manageengine-mail-dispatcher` as primary command.
+
 Use this command in a separate chat window for mail intake implementation only.
 
 ## Scope

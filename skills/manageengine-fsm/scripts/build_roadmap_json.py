@@ -115,7 +115,11 @@ def main():
         ],
     }
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Wrote {out_path} with {len(stages)} stages")
+    print(
+        "build_roadmap_json: "
+        f"status=ok stages={len(stages)} overall={payload['overall_progress']} "
+        f"done={done_items} partial={partial_items} total={total_items} output={out_path}"
+    )
 
 
 if __name__ == "__main__":

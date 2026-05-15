@@ -419,4 +419,9 @@ def run_once_ews() -> int:
 
 
 if __name__ == "__main__":
-    run_once()
+    try:
+        processed = int(run_once() or 0)
+        print(f"mail_intake: status=ok processed={processed} errors=0")
+    except Exception as exc:
+        print(f"mail_intake: status=error processed=0 errors=1 detail={str(exc)[:180]}")
+        raise
