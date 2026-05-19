@@ -28,11 +28,17 @@ CONTEXT_TIMEOUT_MINUTES = int(os.getenv("CONTEXT_TTL_MINUTES", "60"))
 ACTIVE_TICKET_WINDOW_MINUTES = int(os.getenv("ACTIVE_TICKET_WINDOW_MINUTES", "1440"))
 MATCH_SCORE_UPDATE = float(os.getenv("MATCH_SCORE_UPDATE", "0.78"))
 MATCH_SCORE_CLARIFY = float(os.getenv("MATCH_SCORE_CLARIFY", "0.45"))
+FORCE_UPDATE_RECENT_MINUTES = int(os.getenv("FORCE_UPDATE_RECENT_MINUTES", "180"))
 
 BOT_MENTION_ALIASES = ["@hermessds001bot"]
 IMAGE_CACHE_DIR = "/home/sadmin/.hermes/image_cache"
 IMAGE_ATTACH_WINDOW_SECONDS = 900
 IMAGE_ATTACH_MAX_FILES = 5
+IT_STAFF_FILE = os.getenv(
+    "IT_STAFF_FILE",
+    "/home/sadmin/.hermes/skills/software-development/manageengine-telegram-monitor/it_staff.json",
+)
+IGNORE_SUPPORT_STAFF_INTAKE = os.getenv("IGNORE_SUPPORT_STAFF_INTAKE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 NEW_TOPIC_PHRASES = [
     "другая проблема",
@@ -43,10 +49,38 @@ NEW_TOPIC_PHRASES = [
     "новая заявка",
 ]
 
-TELEGRAM_SUPPORT_STAFF_IDS = [
-    "387861683",
-    "@vlupilin007",
-]
+def _load_support_staff_entries() -> List[str]:
+    seed = ["387861683", "@vlupilin007"]
+    try:
+        data = json.loads(Path(IT_STAFF_FILE).read_text(encoding="utf-8"))
+        members = data.get("members", []) if isinstance(data, dict) else []
+        for m in members:
+            if not isinstance(m, dict):
+                continue
+            tg_id = str(m.get("telegram_user_id") or "").strip()
+            tg_user = str(m.get("telegram_username") or "").strip()
+            if tg_id:
+                seed.append(tg_id)
+            if tg_user:
+                seed.append(tg_user)
+    except Exception:
+        pass
+    # preserve order, drop duplicates
+    out = []
+    seen = set()
+    for x in seed:
+        k = str(x).strip()
+        if not k:
+            continue
+        lk = k.lower()
+        if lk in seen:
+            continue
+        seen.add(lk)
+        out.append(k)
+    return out
+
+
+TELEGRAM_SUPPORT_STAFF_IDS = _load_support_staff_entries()
 
 
 def is_support_staff(telegram_user_id: str, username: str = None) -> bool:
@@ -196,6 +230,14 @@ def _select_context(
 
     if best_score >= MATCH_SCORE_UPDATE:
         return "update", best_ctx, best_score
+    try:
+        best_last_update = datetime.fromisoformat(str(best_ctx.get("last_update", "")))
+        best_age_minutes = (datetime.now() - best_last_update).total_seconds() / 60.0
+    except Exception:
+        best_age_minutes = 1e9
+    same_category = str(best_ctx.get("last_category_id", "")) == str(category_id)
+    if same_category and best_age_minutes <= max(1, FORCE_UPDATE_RECENT_MINUTES):
+        return "update", best_ctx, best_score
     if best_score >= MATCH_SCORE_CLARIFY:
         return "clarify", best_ctx, best_score
     return "create", None, best_score
@@ -211,7 +253,7 @@ def process_message(
     if not message_text:
         return None, "ignored_bot_mention"
 
-    if is_support_staff(telegram_user_id, username):
+    if IGNORE_SUPPORT_STAFF_INTAKE and is_support_staff(telegram_user_id, username):
         return None, "ignored_support_staff"
 
     if is_greeting(message_text):

@@ -13,7 +13,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from faster_whisper import WhisperModel
 
-from monitor import process_message
+from monitor import process_message, is_support_staff
 from api_wrapper import ManageEngineAPI
 
 
@@ -23,6 +23,28 @@ log = logging.getLogger("dispatcher_bot")
 TG_TOKEN = os.getenv("DISPATCHER_TELEGRAM_BOT_TOKEN", "").strip()
 TARGET_CHAT_ID = int(os.getenv("DISPATCHER_TARGET_CHAT_ID", "0"))
 TARGET_TOPIC_ID = int(os.getenv("DISPATCHER_TARGET_TOPIC_ID", "0"))
+
+
+def _parse_chat_ids_env(name: str, default: str = ""):
+    raw = os.getenv(name, default)
+    out = set()
+    for part in str(raw or "").split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            out.add(int(p))
+        except Exception:
+            continue
+    return out
+
+
+INTAKE_CHAT_IDS = _parse_chat_ids_env("DISPATCHER_INTAKE_CHAT_IDS", str(TARGET_CHAT_ID) if TARGET_CHAT_ID else "")
+STAFF_IGNORE_CHAT_IDS = _parse_chat_ids_env("DISPATCHER_STAFF_IGNORE_CHAT_IDS", "")
+SILENT_CHAT_IDS = _parse_chat_ids_env(
+    "DISPATCHER_SILENT_CHAT_IDS",
+    os.getenv("DISPATCHER_STAFF_IGNORE_CHAT_IDS", ""),
+)
 STT_MODEL_NAME = os.getenv("DISPATCHER_STT_MODEL", "base").strip() or "base"
 CLASSIFIER_MODEL = os.getenv("DISPATCHER_CLASSIFIER_MODEL", "glm-5.1").strip()
 CLASSIFIER_BASE_URL = os.getenv("DISPATCHER_CLASSIFIER_BASE_URL", "https://api.z.ai/api/paas/v4").strip()
@@ -39,7 +61,9 @@ CLASSIFIER_RETRIES = int(os.getenv("DISPATCHER_CLASSIFIER_RETRIES", "2"))
 _stt_model = None
 _pending_it_clarification = {}
 _pending_context_clarification = {}
+_silent_image_prompt_sent_at = {}
 CONTEXT_CLARIFY_TIMEOUT_SECONDS = int(os.getenv("DISPATCHER_CONTEXT_CLARIFY_TIMEOUT_SECONDS", "300"))
+SILENT_IMAGE_PROMPT_COOLDOWN_SECONDS = int(os.getenv("DISPATCHER_SILENT_IMAGE_PROMPT_COOLDOWN_SECONDS", "21600"))
 
 INJECTION_PATTERNS = [
     r"забуд[ья]\s+.*инструк",
@@ -257,6 +281,14 @@ def _can_create_ticket(llm_triage: str, llm_is_it: Optional[bool], llm_conf: flo
     return llm_triage == "IT" and llm_is_it is True and llm_conf >= CLASSIFIER_CREATE_THRESHOLD
 
 
+def _log_text_preview(text: str, limit: int = 140) -> str:
+    raw = str(text or "").replace("\n", " ").replace("\r", " ").strip()
+    raw = re.sub(r"\s+", " ", raw)
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit].rstrip() + "..."
+
+
 async def _attach_message_images(update: Update, request_id: str) -> None:
     msg = update.effective_message
     if not msg:
@@ -324,8 +356,32 @@ async def _voice_to_text(update: Update) -> str:
             pass
 
 
+async def _send_ops_text(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    payload = {"chat_id": TARGET_CHAT_ID, "text": text}
+    if TARGET_TOPIC_ID:
+        payload["message_thread_id"] = TARGET_TOPIC_ID
+    await context.bot.send_message(**payload)
+
+
+async def _reply_intake(msg, chat_id: int, text: str) -> None:
+    if chat_id in SILENT_CHAT_IDS:
+        return
+    await msg.reply_text(text)
+
+
+async def _maybe_reply_silent_image_prompt(msg, chat_id: int, user_id: str) -> bool:
+    if chat_id not in SILENT_CHAT_IDS:
+        return False
+    now = time.time()
+    last = _silent_image_prompt_sent_at.get(user_id, 0)
+    if now - last < SILENT_IMAGE_PROMPT_COOLDOWN_SECONDS:
+        return False
+    _silent_image_prompt_sent_at[user_id] = now
+    await msg.reply_text("Опишите проблему текстом, пожалуйста.")
+    return True
+
+
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    del context
     msg = update.effective_message
     if not msg or not update.effective_chat or not update.effective_user:
         return
@@ -333,30 +389,36 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat_id = update.effective_chat.id
     topic_id = msg.message_thread_id or 0
 
-    if chat_id != TARGET_CHAT_ID:
+    if chat_id not in INTAKE_CHAT_IDS:
         return
-    if TARGET_TOPIC_ID and topic_id != TARGET_TOPIC_ID:
+    if chat_id == TARGET_CHAT_ID and TARGET_TOPIC_ID and topic_id != TARGET_TOPIC_ID:
         return
 
     text = (msg.text or msg.caption or "").strip()
+    user_id = str(update.effective_user.id)
+    user_label = _username(update)
+
     if not text and (msg.voice or msg.audio):
         try:
             text = (await _voice_to_text(update)).strip()
         except Exception:
             log.exception("Voice transcription failed")
-            await msg.reply_text("Опишите проблему текстом, пожалуйста.")
+            await _reply_intake(msg, chat_id, "Опишите проблему текстом, пожалуйста.")
             return
 
     if not text:
-        await msg.reply_text("Опишите проблему текстом, пожалуйста.")
+        has_image = bool(msg.photo) or bool(msg.document and msg.document.mime_type and msg.document.mime_type.startswith("image/"))
+        if has_image and await _maybe_reply_silent_image_prompt(msg, chat_id, user_id):
+            return
+        await _reply_intake(msg, chat_id, "Опишите проблему текстом, пожалуйста.")
         return
 
     if _is_prompt_injection(text):
-        await msg.reply_text("Не IT инцидент.")
+        await _reply_intake(msg, chat_id, "Не IT инцидент.")
         return
 
-    user_id = str(update.effective_user.id)
-    user_label = _username(update)
+    if chat_id in STAFF_IGNORE_CHAT_IDS and is_support_staff(user_id, user_label):
+        return
 
     _pending_context_clarification.pop(user_id, None)
 
@@ -369,12 +431,13 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         _pending_it_clarification.pop(user_id, None)
         llm_is_it2, llm_category_id2, llm_conf2, llm_triage2 = _classify_with_llm(clarified_text)
         log.info(
-            "classification user=%s is_it=%s triage=%s category=%s conf=%.2f",
+            "classification user=%s is_it=%s triage=%s category=%s conf=%.2f msg_preview=%r",
             user_id,
             llm_is_it2,
             llm_triage2,
             llm_category_id2,
             llm_conf2,
+            _log_text_preview(clarified_text),
         )
 
         if _can_create_ticket(llm_triage2, llm_is_it2, llm_conf2):
@@ -388,13 +451,13 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.info("clarify_resolution user=%s result=IT status=%s", user_id, status)
             if status == "created" and request_id:
                 await _attach_message_images(update, str(request_id))
-                await msg.reply_text(_build_created_text(str(request_id), user_label, int(user_id), original_text, ai_category))
+                await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), original_text, ai_category))
                 return
             if status == "updated" and request_id:
                 await _attach_message_images(update, str(request_id))
-                await msg.reply_text(f"Добавлено к заявке №{request_id}")
+                await _send_ops_text(context, f"Добавлено к заявке №{request_id}")
                 return
-            await msg.reply_text("⚠️ Не удалось создать заявку. Обратитесь к администратору.")
+            await _send_ops_text(context, "⚠️ Не удалось создать заявку. Обратитесь к администратору.")
             return
 
         if llm_triage2 == "UNSURE" or llm_is_it2 is None:
@@ -408,41 +471,60 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             if status == "created" and request_id:
                 await _attach_message_images(update, str(request_id))
-                await msg.reply_text(_build_created_text(str(request_id), user_label, int(user_id), original_text, "612"))
+                await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), original_text, "612"))
                 return
             if status == "updated" and request_id:
                 await _attach_message_images(update, str(request_id))
-                await msg.reply_text(f"Добавлено к заявке №{request_id}")
+                await _send_ops_text(context, f"Добавлено к заявке №{request_id}")
                 return
-            await msg.reply_text("⚠️ Не удалось создать заявку. Обратитесь к администратору.")
+            await _send_ops_text(context, "⚠️ Не удалось создать заявку. Обратитесь к администратору.")
             return
         else:
             log.info("clarify_resolution user=%s result=NON_IT", user_id)
-        await msg.reply_text("Не IT инцидент.")
+        await _reply_intake(msg, chat_id, "Не IT инцидент.")
         return
 
     llm_is_it, llm_category_id, llm_conf, llm_triage = _classify_with_llm(text)
     log.info(
-        "classification user=%s is_it=%s triage=%s category=%s conf=%.2f",
+        "classification user=%s is_it=%s triage=%s category=%s conf=%.2f msg_preview=%r",
         user_id,
         llm_is_it,
         llm_triage,
         llm_category_id,
         llm_conf,
+        _log_text_preview(text),
     )
 
     if llm_triage == "NON_IT":
-        await msg.reply_text("Не IT инцидент.")
+        await _reply_intake(msg, chat_id, "Не IT инцидент.")
         return
     if llm_triage == "UNSURE" or (llm_is_it is True and CLASSIFIER_UNSURE_FLOOR <= llm_conf < CLASSIFIER_CREATE_THRESHOLD):
+        if chat_id in SILENT_CHAT_IDS:
+            log.info(
+                "ignored_ambiguous_followup user=%s triage=%s conf=%.2f reason=unsure_in_silent_chat msg_preview=%r",
+                user_id,
+                llm_triage,
+                llm_conf,
+                _log_text_preview(text),
+            )
+            return
         _pending_it_clarification[user_id] = {"original_text": text, "asked_at": time.time()}
-        await msg.reply_text("Это проблема в какой IT-системе или оборудовании?")
+        await _reply_intake(msg, chat_id, "Это проблема в какой IT-системе или оборудовании?")
         return
     if llm_is_it is None:
         return
     if llm_conf < CLASSIFIER_CREATE_THRESHOLD:
+        if chat_id in SILENT_CHAT_IDS:
+            log.info(
+                "ignored_ambiguous_followup user=%s triage=%s conf=%.2f reason=low_confidence_in_silent_chat msg_preview=%r",
+                user_id,
+                llm_triage,
+                llm_conf,
+                _log_text_preview(text),
+            )
+            return
         _pending_it_clarification[user_id] = {"original_text": text, "asked_at": time.time()}
-        await msg.reply_text("Это проблема в какой IT-системе или оборудовании?")
+        await _reply_intake(msg, chat_id, "Это проблема в какой IT-системе или оборудовании?")
         return
 
     category_id = llm_category_id or "612"
@@ -451,11 +533,19 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if status == "created" and request_id:
         await _attach_message_images(update, str(request_id))
-        await msg.reply_text(_build_created_text(str(request_id), user_label, int(user_id), text, category_id))
+        await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), text, category_id))
     elif status == "updated" and request_id:
         await _attach_message_images(update, str(request_id))
-        await msg.reply_text(f"Добавлено к заявке №{request_id}")
+        await _send_ops_text(context, f"Добавлено к заявке №{request_id}")
     elif status.startswith("clarify_needed:"):
+        if chat_id in SILENT_CHAT_IDS:
+            log.info(
+                "ignored_ambiguous_followup user=%s reason=context_clarify_needed status=%s msg_preview=%r",
+                user_id,
+                status,
+                _log_text_preview(text),
+            )
+            return
         request_id, status2 = process_message(
             user_id,
             user_label,
@@ -464,17 +554,17 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         if status2 == "created" and request_id:
             await _attach_message_images(update, str(request_id))
-            await msg.reply_text(_build_created_text(str(request_id), user_label, int(user_id), text, category_id))
+            await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), text, category_id))
             return
         if status2 == "updated" and request_id:
             await _attach_message_images(update, str(request_id))
-            await msg.reply_text(f"Добавлено к заявке №{request_id}")
+            await _send_ops_text(context, f"Добавлено к заявке №{request_id}")
             return
-        await msg.reply_text("⚠️ Не удалось создать заявку. Обратитесь к администратору.")
+        await _send_ops_text(context, "⚠️ Не удалось создать заявку. Обратитесь к администратору.")
     elif status in {"ignored_bot_mention", "ignored_support_staff", "greeting"}:
         return
     else:
-        await msg.reply_text("⚠️ Не удалось создать заявку. Обратитесь к администратору.")
+        await _send_ops_text(context, "⚠️ Не удалось создать заявку. Обратитесь к администратору.")
 
 
 def main() -> None:
@@ -482,11 +572,20 @@ def main() -> None:
         raise RuntimeError("DISPATCHER_TELEGRAM_BOT_TOKEN is required")
     if TARGET_CHAT_ID == 0:
         raise RuntimeError("DISPATCHER_TARGET_CHAT_ID is required")
+    if not INTAKE_CHAT_IDS:
+        raise RuntimeError("DISPATCHER_INTAKE_CHAT_IDS or DISPATCHER_TARGET_CHAT_ID is required")
 
     app = Application.builder().token(TG_TOKEN).build()
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, _handle_message))
 
-    log.info("Dispatcher bot started: chat_id=%s topic_id=%s", TARGET_CHAT_ID, TARGET_TOPIC_ID)
+    log.info(
+        "Dispatcher bot started: target_chat_id=%s topic_id=%s intake_chat_ids=%s staff_ignore_chat_ids=%s silent_chat_ids=%s",
+        TARGET_CHAT_ID,
+        TARGET_TOPIC_ID,
+        sorted(INTAKE_CHAT_IDS),
+        sorted(STAFF_IGNORE_CHAT_IDS),
+        sorted(SILENT_CHAT_IDS),
+    )
     app.run_polling()
 
 

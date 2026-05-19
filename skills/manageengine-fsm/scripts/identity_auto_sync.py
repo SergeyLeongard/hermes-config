@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple
 from urllib.parse import quote_plus
@@ -20,7 +21,14 @@ MONITOR_LOG_PATH = Path(
         "/home/sadmin/.hermes/skills/software-development/manageengine-telegram-monitor/logs/monitor.log",
     )
 )
+DISPATCHER_CONTEXT_PATH = Path(
+    os.getenv(
+        "IDENTITY_SYNC_CONTEXT_PATH",
+        "/home/sadmin/.hermes/skills/software-development/manageengine-telegram-monitor/context.json",
+    )
+)
 FALLBACK_REQUESTER_ID = os.getenv("MANAGEENGINE_FALLBACK_REQUESTER_ID", "1011").strip() or "1011"
+LOOKBACK_HOURS = int(os.getenv("IDENTITY_SYNC_LOOKBACK_HOURS", "72") or "72")
 
 CREATED_RE = re.compile(r"created_request\s+.*telegram_user_id=(\d+)\s+request_id=(\d+)")
 UDF_TG_ID_RE = re.compile(r"@id(\d+)$", re.IGNORECASE)
@@ -86,13 +94,14 @@ def _extract_tg_id_from_udf(request_row: Dict) -> str:
 
 
 def read_pairs_from_recent_requests(api: ManageEngineAPI) -> Tuple[List[Dict[str, str]], int]:
-    state = load_json(STATE_PATH, {"offset": 0})
-    since_ms = int(state.get("last_created_time_ms", 0) or 0)
+    now_ms = int(time.time() * 1000)
+    lookback_ms = max(1, LOOKBACK_HOURS) * 60 * 60 * 1000
+    since_ms = max(0, now_ms - lookback_ms)
     next_since_ms = since_ms
     records: List[Dict[str, str]] = []
 
     start_index = 1
-    row_count = 200
+    row_count = 1000
     max_rows = 4000
     seen_rows = 0
 
@@ -102,7 +111,7 @@ def read_pairs_from_recent_requests(api: ManageEngineAPI) -> Tuple[List[Dict[str
                 "start_index": start_index,
                 "row_count": row_count,
                 "sort_field": "created_time",
-                "sort_order": "asc",
+                "sort_order": "desc",
             }
         }
         endpoint = f"requests?input_data={quote_plus(json.dumps(payload, ensure_ascii=False))}"
@@ -150,6 +159,31 @@ def read_pairs_from_recent_requests(api: ManageEngineAPI) -> Tuple[List[Dict[str
     return records, next_since_ms
 
 
+def load_context_indexes() -> Tuple[Dict[str, str], Dict[str, List[str]]]:
+    request_to_tg: Dict[str, str] = {}
+    username_to_tg: Dict[str, List[str]] = {}
+    data = load_json(DISPATCHER_CONTEXT_PATH, {})
+    rows = data.get("active_contexts", []) if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        return request_to_tg, username_to_tg
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        tg_id = str(row.get("telegram_user_id") or "").strip()
+        if not tg_id:
+            continue
+        req_id = str(row.get("request_id") or "").strip()
+        if req_id and req_id not in request_to_tg:
+            request_to_tg[req_id] = tg_id
+        uname = str(row.get("username") or "").strip().lower()
+        if uname:
+            username_to_tg.setdefault(uname, [])
+            if tg_id not in username_to_tg[uname]:
+                username_to_tg[uname].append(tg_id)
+    return request_to_tg, username_to_tg
+
+
 def upsert_identity_from_record(
     mapping: Dict,
     requester_id: str,
@@ -173,7 +207,15 @@ def upsert_identity_from_record(
     normalized_username = str(telegram_username or "").strip().lower()
     effective_email = str(requester_email or email_from_udf or "").strip().lower()
 
-    if normalized_tg_id:
+    existing_tg_entry = mapping["mapping"]["by_telegram_user_id"].get(normalized_tg_id) if normalized_tg_id else None
+    tg_conflict = bool(
+        normalized_tg_id
+        and isinstance(existing_tg_entry, dict)
+        and str(existing_tg_entry.get("requester_id") or "").strip()
+        and str(existing_tg_entry.get("requester_id") or "").strip() != requester_id
+    )
+
+    if normalized_tg_id and not tg_conflict:
         tg_entry = {
             "requester_id": requester_id,
             "requester_name": requester_name,
@@ -205,7 +247,9 @@ def upsert_identity_from_record(
     existing_tg_id = ""
     if idx >= 0:
         existing_tg_id = str(identities[idx].get("telegram_user_id") or "").strip()
-    merged_tg_id = normalized_tg_id or existing_tg_id
+    merged_tg_id = existing_tg_id
+    if normalized_tg_id and not tg_conflict:
+        merged_tg_id = normalized_tg_id
     merged_username = normalized_username
     if not merged_username and idx >= 0:
         merged_username = str(identities[idx].get("telegram_username") or "").strip().lower()
@@ -253,15 +297,23 @@ def upsert_identity(mapping: Dict, telegram_user_id: str, requester_id: str, req
 
     changed = False
 
-    tg_entry = {
-        "requester_id": requester_id,
-        "requester_name": requester_name,
-        "status": "confirmed",
-        "source": "auto-sync",
-    }
-    if mapping["mapping"]["by_telegram_user_id"].get(telegram_user_id) != tg_entry:
-        mapping["mapping"]["by_telegram_user_id"][telegram_user_id] = tg_entry
-        changed = True
+    existing_tg_entry = mapping["mapping"]["by_telegram_user_id"].get(telegram_user_id)
+    tg_conflict = bool(
+        isinstance(existing_tg_entry, dict)
+        and str(existing_tg_entry.get("requester_id") or "").strip()
+        and str(existing_tg_entry.get("requester_id") or "").strip() != requester_id
+    )
+
+    if not tg_conflict:
+        tg_entry = {
+            "requester_id": requester_id,
+            "requester_name": requester_name,
+            "status": "confirmed",
+            "source": "auto-sync",
+        }
+        if mapping["mapping"]["by_telegram_user_id"].get(telegram_user_id) != tg_entry:
+            mapping["mapping"]["by_telegram_user_id"][telegram_user_id] = tg_entry
+            changed = True
 
     if requester_email:
         em_entry = {
@@ -282,10 +334,14 @@ def upsert_identity(mapping: Dict, telegram_user_id: str, requester_id: str, req
             break
 
     normalized_username = str((identities[idx].get("telegram_username") if idx >= 0 else "") or "").strip().lower()
+    merged_tg_id = str((identities[idx].get("telegram_user_id") if idx >= 0 else "") or "").strip()
+    if not tg_conflict:
+        merged_tg_id = telegram_user_id
+
     merged = {
         "requester_id": requester_id,
         "requester_name": requester_name,
-        "telegram_user_id": telegram_user_id,
+        "telegram_user_id": merged_tg_id,
         "telegram_username": normalized_username,
         "email": requester_email,
         "status": "confirmed",
@@ -310,6 +366,7 @@ def main() -> None:
     )
 
     api = ManageEngineAPI()
+    request_to_tg, username_to_tg = load_context_indexes()
 
     request_records: List[Dict[str, str]] = []
     if not pairs:
@@ -346,14 +403,23 @@ def main() -> None:
 
     for rec in deduped_records:
         req_id = str(rec.get("request_id") or "").strip()
+        rec_tg_id = str(rec.get("telegram_user_id") or "").strip()
+        rec_tg_username = str(rec.get("telegram_username") or "").strip().lower()
+        if not rec_tg_id and req_id:
+            rec_tg_id = request_to_tg.get(req_id, "")
+        if not rec_tg_id and rec_tg_username:
+            candidates = username_to_tg.get(rec_tg_username, [])
+            if len(candidates) == 1:
+                rec_tg_id = candidates[0]
+
         requester_id, requester_name, requester_email, _ = extract_requester_fields(api, req_id)
         if upsert_identity_from_record(
             mapping=mapping,
             requester_id=requester_id,
             requester_name=requester_name,
             requester_email=requester_email,
-            telegram_user_id=str(rec.get("telegram_user_id") or ""),
-            telegram_username=str(rec.get("telegram_username") or ""),
+            telegram_user_id=rec_tg_id,
+            telegram_username=rec_tg_username,
             email_from_udf=str(rec.get("email") or ""),
         ):
             changed = True

@@ -106,8 +106,16 @@ def main():
         },
     }
     HINTS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps(out["stats"], ensure_ascii=False))
+    print(
+        "knowledge_curation: "
+        f"status=ok texts_scanned={out['stats']['texts_scanned']} "
+        f"new_hints_added={out['stats']['new_hints_added']} errors=0"
+    )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"knowledge_curation: status=error texts_scanned=0 new_hints_added=0 errors=1 detail={str(exc)[:180]}")
+        raise
