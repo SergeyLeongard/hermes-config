@@ -15,6 +15,7 @@ from faster_whisper import WhisperModel
 
 from monitor import process_message, is_support_staff
 from api_wrapper import ManageEngineAPI
+from incident_actions import take_button_markup, register_handlers as register_incident_action_handlers
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -363,6 +364,13 @@ async def _send_ops_text(context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
     await context.bot.send_message(**payload)
 
 
+async def _send_ops_created(context: ContextTypes.DEFAULT_TYPE, text: str, request_id: str) -> None:
+    payload = {"chat_id": TARGET_CHAT_ID, "text": text, "reply_markup": take_button_markup(str(request_id))}
+    if TARGET_TOPIC_ID:
+        payload["message_thread_id"] = TARGET_TOPIC_ID
+    await context.bot.send_message(**payload)
+
+
 async def _reply_intake(msg, chat_id: int, text: str) -> None:
     if chat_id in SILENT_CHAT_IDS:
         return
@@ -451,7 +459,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             log.info("clarify_resolution user=%s result=IT status=%s", user_id, status)
             if status == "created" and request_id:
                 await _attach_message_images(update, str(request_id))
-                await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), original_text, ai_category))
+                await _send_ops_created(context, _build_created_text(str(request_id), user_label, int(user_id), original_text, ai_category), str(request_id))
                 return
             if status == "updated" and request_id:
                 await _attach_message_images(update, str(request_id))
@@ -471,7 +479,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             if status == "created" and request_id:
                 await _attach_message_images(update, str(request_id))
-                await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), original_text, "612"))
+                await _send_ops_created(context, _build_created_text(str(request_id), user_label, int(user_id), original_text, "612"), str(request_id))
                 return
             if status == "updated" and request_id:
                 await _attach_message_images(update, str(request_id))
@@ -533,7 +541,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if status == "created" and request_id:
         await _attach_message_images(update, str(request_id))
-        await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), text, category_id))
+        await _send_ops_created(context, _build_created_text(str(request_id), user_label, int(user_id), text, category_id), str(request_id))
     elif status == "updated" and request_id:
         await _attach_message_images(update, str(request_id))
         await _send_ops_text(context, f"Добавлено к заявке №{request_id}")
@@ -554,7 +562,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         if status2 == "created" and request_id:
             await _attach_message_images(update, str(request_id))
-            await _send_ops_text(context, _build_created_text(str(request_id), user_label, int(user_id), text, category_id))
+            await _send_ops_created(context, _build_created_text(str(request_id), user_label, int(user_id), text, category_id), str(request_id))
             return
         if status2 == "updated" and request_id:
             await _attach_message_images(update, str(request_id))
@@ -576,6 +584,7 @@ def main() -> None:
         raise RuntimeError("DISPATCHER_INTAKE_CHAT_IDS or DISPATCHER_TARGET_CHAT_ID is required")
 
     app = Application.builder().token(TG_TOKEN).build()
+    register_incident_action_handlers(app)
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, _handle_message))
 
     log.info(

@@ -236,7 +236,7 @@ def _select_context(
     except Exception:
         best_age_minutes = 1e9
     same_category = str(best_ctx.get("last_category_id", "")) == str(category_id)
-    if same_category and best_age_minutes <= max(1, FORCE_UPDATE_RECENT_MINUTES):
+    if same_category and str(category_id) != "612" and best_age_minutes <= max(1, FORCE_UPDATE_RECENT_MINUTES):
         return "update", best_ctx, best_score
     if best_score >= MATCH_SCORE_CLARIFY:
         return "clarify", best_ctx, best_score

@@ -229,6 +229,14 @@ class ManageEngineAPI:
         """
         return self._make_request("PUT", f"requests/{request_id}", {"request": update_data})
 
+    def assign_technician(self, request_id: str, technician_id: str) -> Dict[str, Any]:
+        """Assign technician via dedicated path endpoint when available."""
+        rid = str(request_id or "").strip()
+        tid = str(technician_id or "").strip()
+        if not rid or not tid:
+            return {"error": "missing request_id or technician_id", "response_status": {"status": "failed"}}
+        return self._make_request("PUT", f"requests/{rid}/technician/{tid}")
+
     def add_note(self, request_id: str, note_text: str) -> Dict[str, Any]:
         """Add note/comment to request discussion."""
         note_data = {
