@@ -26,6 +26,8 @@ ASSIGNMENT_MAP_PATH = Path(
     )
 )
 _TECH_DEFAULT_GROUP_CACHE: Dict[str, str] = {}
+SET_IN_WORK_STATUS = str(os.getenv("DISPATCHER_TAKE_SET_IN_WORK_STATUS", "true")).strip().lower() in {"1", "true", "yes", "on"}
+IN_WORK_STATUS_ID = str(os.getenv("DISPATCHER_TAKE_IN_WORK_STATUS_ID", "5")).strip()
 
 
 def _load_assignment_map() -> Dict[str, Dict[str, str]]:
@@ -53,13 +55,14 @@ def take_button_markup(request_id: str) -> InlineKeyboardMarkup:
     )
 
 
-def _append_responsible(base_text: str, name: str) -> str:
+def _append_responsible(base_text: str, name: str, group_name: str = "") -> str:
     text = str(base_text or "")
     marker = "\n\n👨‍💻 Ответственный:"
     pos = text.find(marker)
     if pos >= 0:
         text = text[:pos]
-    return f"{text}\n\n👨‍💻 Ответственный: {name}"
+    suffix = f" ({group_name})" if str(group_name or "").strip() else ""
+    return f"{text}\n\n👨‍💻 Ответственный: {name}{suffix}"
 
 
 def _request_diag_fields(req: Dict[str, Any]) -> Dict[str, str]:
@@ -144,6 +147,7 @@ async def _handle_take_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     current_tech = req.get("technician") or {}
+    current_group_name = str((req.get("group") or {}).get("name") or "").strip()
     current_tid = str(current_tech.get("id") or "").strip()
     current_tname = str(current_tech.get("name") or "").strip()
     if current_tid:
@@ -151,7 +155,7 @@ async def _handle_take_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await q.answer("Уже у вас в работе")
             if q.message and q.message.text:
                 try:
-                    await q.message.edit_text(_append_responsible(q.message.text, actor_name), reply_markup=None)
+                    await q.message.edit_text(_append_responsible(q.message.text, actor_name, current_group_name), reply_markup=None)
                 except Exception:
                     pass
             log.info("take_action request_id=%s result=already_assigned_self tg_user_id=%s technician_id=%s", request_id, actor_id, tech_id)
@@ -159,7 +163,7 @@ async def _handle_take_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await q.answer(f"Уже принял: {current_tname or current_tid}", show_alert=True)
         if q.message and q.message.text:
             try:
-                await q.message.edit_text(_append_responsible(q.message.text, current_tname or current_tid), reply_markup=None)
+                await q.message.edit_text(_append_responsible(q.message.text, current_tname or current_tid, current_group_name), reply_markup=None)
             except Exception:
                 pass
         log.info("take_action request_id=%s result=already_taken tg_user_id=%s current_technician_id=%s", request_id, actor_id, current_tid)
@@ -182,6 +186,7 @@ async def _handle_take_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     verify = api.get_request_status(request_id).get("request") or {}
     vtech = verify.get("technician") or {}
+    vgroup_name = str((verify.get("group") or {}).get("name") or "").strip()
     vtid = str(vtech.get("id") or "").strip()
     vtname = str(vtech.get("name") or actor_name).strip()
     if vtid != tech_id:
@@ -202,25 +207,47 @@ async def _handle_take_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await q.answer(f"Уже принял: {vtname or vtid}", show_alert=True)
         if q.message and q.message.text:
             try:
-                await q.message.edit_text(_append_responsible(q.message.text, vtname or vtid), reply_markup=None)
+                    await q.message.edit_text(_append_responsible(q.message.text, vtname or vtid, vgroup_name), reply_markup=None)
             except Exception:
                 pass
         log.info("take_action request_id=%s result=already_taken tg_user_id=%s expected_technician_id=%s actual_technician_id=%s", request_id, actor_id, tech_id, vtid)
         return
 
+    status_result = "skipped"
+    if SET_IN_WORK_STATUS:
+        st = api.update_request(request_id, {"status": {"id": IN_WORK_STATUS_ID}})
+        st_status = (st.get("response_status") or {}).get("status")
+        if st_status == "success":
+            status_result = "set_by_id"
+        else:
+            st2 = api.update_request(request_id, {"status": {"name": "В работе"}})
+            st2_status = (st2.get("response_status") or {}).get("status")
+            if st2_status == "success":
+                status_result = "set_by_name"
+            else:
+                status_result = "failed"
+                log.info(
+                    "take_action request_id=%s result=status_set_failed tg_user_id=%s status_id=%s detail=%s",
+                    request_id,
+                    actor_id,
+                    IN_WORK_STATUS_ID,
+                    str(st2)[:300],
+                )
+
     await q.answer("Взято в работу")
     if q.message and q.message.text:
         try:
-            await q.message.edit_text(_append_responsible(q.message.text, vtname or actor_name), reply_markup=None)
+            await q.message.edit_text(_append_responsible(q.message.text, vtname or actor_name, vgroup_name), reply_markup=None)
         except Exception:
             log.exception("take_action request_id=%s result=telegram_edit_error", request_id)
     log.info(
-        "take_action request_id=%s result=ok_assigned tg_user_id=%s tg_username=%s technician_id=%s group_id=%s assign_path=%s",
+        "take_action request_id=%s result=ok_assigned tg_user_id=%s tg_username=%s technician_id=%s group_id=%s status_result=%s assign_path=%s",
         request_id,
         actor_id,
         actor_username,
         tech_id,
         group_id,
+        status_result,
         "group_then_technician",
     )
 
