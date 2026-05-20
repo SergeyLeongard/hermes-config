@@ -80,7 +80,7 @@ def build_created_5line(request_id: str, user_label: str, user_id_label: str, su
     )
 
 
-def send_telegram_room3(text: str) -> bool:
+def send_telegram_room3(text: str, request_id: str = "") -> bool:
     token = os.getenv("DISPATCHER_TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("INCIDENTS_ROOM3_CHAT_ID", os.getenv("DISPATCHER_TARGET_CHAT_ID", "")).strip()
     topic_id = os.getenv("INCIDENTS_ROOM3_TOPIC_ID", os.getenv("DISPATCHER_TARGET_TOPIC_ID", "")).strip()
@@ -93,6 +93,11 @@ def send_telegram_room3(text: str) -> bool:
             "chat_id": int(chat_id) if chat_id.lstrip("-").isdigit() else chat_id,
             "text": text,
         }
+        rid = str(request_id or "").strip()
+        if rid:
+            payload["reply_markup"] = {
+                "inline_keyboard": [[{"text": "Принять в работу", "callback_data": f"take:{rid}"}]]
+            }
         if topic_id and topic_id.isdigit():
             payload["message_thread_id"] = int(topic_id)
         url = f"https://api.telegram.org/bot{token}/sendMessage"

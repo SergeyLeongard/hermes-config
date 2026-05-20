@@ -251,7 +251,7 @@ def _notify_result(action: str, request_id: str, event: MailEvent, detail: str) 
             f"От: {event.from_email or '-'}\n"
             f"Деталь: {detail[:180]}"
         )
-    send_telegram_room3(message)
+    send_telegram_room3(message, request_id if action == "created" else "")
 
 
 def process_mail_event(state: Dict, event: MailEvent) -> None:
